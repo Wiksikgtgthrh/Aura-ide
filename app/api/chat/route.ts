@@ -1,0 +1,587 @@
+import {
+  convertToModelMessages,
+  createUIMessageStreamResponse,
+  generateText,
+  streamText,
+  toUIMessageStream,
+  type UIMessage,
+} from 'ai'
+import { createOpenAI } from '@ai-sdk/openai'
+import { revalidateTag } from 'next/cache'
+import { db } from '@/lib/db'
+import { getSession } from '@/lib/session'
+import { apiKeys, chats, preferences } from '@/lib/db/schema'
+import { decryptSecret } from '@/lib/crypto'
+import { getChatAccess } from '@/lib/chat-access'
+import {
+  createCheckpoint,
+  loadChatMessagesFresh,
+  loadProjectFiles,
+  saveChatMessages,
+  upsertProjectFilesFromMessages,
+} from '@/lib/chat-store'
+import { checkDailyBuiltinLimit, recordTokenUsage } from '@/lib/limits'
+import { isSafeFetchUrl } from '@/lib/ssrf'
+import { deriveDesignState } from '@/lib/design-state'
+import { extractMemoriesFromExchange } from '@/lib/memory-extract'
+import { getActivePluginContext } from '@/app/actions/plugins'
+import { getActiveMcpServers } from '@/app/actions/mcp'
+import { getActiveMemoriesForPrompt } from '@/app/actions/memories'
+import { and, eq } from 'drizzle-orm'
+
+export const maxDuration = 60
+
+// Aura model ids -> AI Gateway model strings
+const AURA_MODEL_MAP: Record<string, string> = {
+  'aura-mini': 'google/gemini-2.5-flash-lite',
+  'aura-pro': 'google/gemini-2.5-flash',
+  'aura-max': 'anthropic/claude-sonnet-4.5',
+  'aura-max-fast': 'anthropic/claude-haiku-4.5',
+}
+
+export async function POST(req: Request) {
+  const session = await getSession()
+  if (!session?.user) {
+    return new Response('Unauthorized', { status: 401 })
+  }
+  const userId = session.user.id
+
+  const {
+    message,
+    id,
+    modelId,
+    files,
+    generateImages,
+    activeSkills,
+    autoPermissions,
+  }: {
+    message: UIMessage
+    id: string
+    modelId?: string
+    files?: Array<{ name: string; type: string; dataUrl: string }>
+    generateImages?: boolean
+    activeSkills?: string[]
+    autoPermissions?: string
+  } = await req.json()
+
+  // Owner or shared-project member. Viewers can read the chat page but may
+  // not generate — only 'owner'/'edit' pass here.
+  const access = await getChatAccess(id, userId)
+  if (!access) {
+    return new Response('Chat not found', { status: 404 })
+  }
+  if (access.level === 'read') {
+    return new Response(
+      JSON.stringify({
+        error: 'read_only',
+        message: 'У вас доступ только на просмотр этого проекта.',
+      }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    )
+  }
+  const chat = access.chat
+
+  // Helper: build an SDK model from a stored api key row.
+  // IMPORTANT: use the Chat Completions interface (openai.chat) — the default
+  // openai(...) call targets OpenAI's Responses API, which third-party
+  // OpenAI-compatible endpoints (Groq, OpenRouter, LM Studio, …) don't serve.
+  // With a custom baseUrl the request failed with a stream-format mismatch.
+  // API keys are strictly PER-ACCOUNT (every query filters by userId — guests
+  // included, a guest is a full account with its own keys).
+  async function resolveUserKeyModel(keyId: number) {
+    const [row] = await db
+      .select({
+        id: apiKeys.id,
+        key: apiKeys.key,
+        baseUrl: apiKeys.baseUrl,
+        modelId: apiKeys.modelId,
+      })
+      .from(apiKeys)
+      .where(and(eq(apiKeys.id, keyId), eq(apiKeys.userId, userId)))
+      .limit(1)
+    if (!row) return null
+    // SSRF guard: a custom baseUrl pointing at an internal address would let
+    // the streamed response read the internal network. Reject unsafe targets.
+    if (row.baseUrl && !(await isSafeFetchUrl(row.baseUrl))) return null
+    const openai = createOpenAI({
+      apiKey: decryptSecret(row.key),
+      baseURL: row.baseUrl || undefined,
+    })
+    return { model: openai.chat(row.modelId || 'gpt-4o-mini'), keyId: row.id, modelName: row.modelId || 'gpt-4o-mini' }
+  }
+
+  // Helper: get the first user key as fallback
+  async function getFirstUserKeyModel() {
+    const [row] = await db
+      .select({
+        id: apiKeys.id,
+        key: apiKeys.key,
+        baseUrl: apiKeys.baseUrl,
+        modelId: apiKeys.modelId,
+      })
+      .from(apiKeys)
+      .where(eq(apiKeys.userId, userId))
+      .orderBy(apiKeys.createdAt)
+      .limit(1)
+    if (!row) return null
+    if (row.baseUrl && !(await isSafeFetchUrl(row.baseUrl))) return null
+    const openai = createOpenAI({
+      apiKey: decryptSecret(row.key),
+      baseURL: row.baseUrl || undefined,
+    })
+    // Chat Completions interface — see resolveUserKeyModel note above.
+    return { model: openai.chat(row.modelId || 'gpt-4o-mini'), keyId: row.id, modelName: row.modelId || 'gpt-4o-mini' }
+  }
+
+  // Resolve model: explicit user key > built-in Aura (Gateway) > first user key fallback.
+  // usedApiKeyId tracks WHOSE credit is burned: a number = the account's own
+  // key (never rate-limited), null = built-in Gateway model (daily limits).
+  let model: Parameters<typeof streamText>[0]['model'] | null = null
+  let usedApiKeyId: number | null = null
+  let usedModelName = 'unknown'
+
+  if (modelId?.startsWith('api-')) {
+    // Explicit user key selected
+    const keyId = Number.parseInt(modelId.slice(4), 10)
+    if (Number.isFinite(keyId)) {
+      const resolved = await resolveUserKeyModel(keyId)
+      if (resolved) {
+        model = resolved.model
+        usedApiKeyId = resolved.keyId
+        usedModelName = resolved.modelName
+      }
+    }
+  }
+
+  if (!model) {
+    // Try to use a user key first (avoids Gateway billing requirement)
+    const resolved = await getFirstUserKeyModel()
+    if (resolved) {
+      model = resolved.model
+      usedApiKeyId = resolved.keyId
+      usedModelName = resolved.modelName
+    } else {
+      // Fall back to AI Gateway built-in models
+      const gatewayModelId = (modelId && AURA_MODEL_MAP[modelId])
+        ? AURA_MODEL_MAP[modelId]
+        : AURA_MODEL_MAP['aura-max']
+      model = gatewayModelId
+      usedModelName = gatewayModelId
+    }
+  }
+
+  // Daily limit — ONLY for built-in Gateway models. Requests on the account's
+  // own key are free for the platform and never limited.
+  if (usedApiKeyId === null) {
+    const isAnonymous =
+      (session.user as { isAnonymous?: boolean | null }).isAnonymous === true
+    const check = await checkDailyBuiltinLimit(userId, isAnonymous)
+    if (!check.allowed) {
+      return new Response(
+        JSON.stringify({
+          error: 'rate_limit',
+          message: `Дневной лимит встроенных моделей исчерпан (${check.used}/${check.limit}). Добавьте свой API-ключ на странице «Мои API» — собственные ключи не ограничиваются.`,
+        }),
+        { status: 429, headers: { 'Content-Type': 'application/json' } },
+      )
+    }
+  }
+
+  // Custom instructions, plugin rules, MCP servers and memories — fetched in parallel
+  const [prefsRows, pluginRules, activeMcps, activeMemories] = await Promise.all([
+    db
+      .select({ customInstructions: preferences.customInstructions })
+      .from(preferences)
+      .where(eq(preferences.userId, userId))
+      .limit(1),
+    getActivePluginContext(userId),
+    getActiveMcpServers(),
+    getActiveMemoriesForPrompt(),
+  ])
+  const prefs = prefsRows[0]
+
+  const isIde = chat.mode === 'ide'
+
+  const HTML_PROMPT =
+    'When the user asks you to build, create, or modify a website, page, UI, app, or any visual interface, respond with a SINGLE complete self-contained HTML document (inline <style> and <script>, no external files) inside one ```html code block. Keep any explanation outside the code block brief. When modifying, always return the full updated document.'
+
+  const IDE_PROMPT = `You are Aura, a web IDE AI. You generate modular React 18 + TypeScript + Tailwind CSS + Lucide React projects.
+
+## TECHNOLOGY STACK
+- React 18 (TypeScript) — component-based, split into isolated files
+- Tailwind CSS — utility classes only, no CSS files
+- Lucide React — icons via \`import { IconName } from "lucide-react"\`
+- Recharts — for charts/graphs via \`import { BarChart, ... } from "recharts"\`
+
+## VIRTUAL FILE SYSTEM STRUCTURE
+Follow this strict hierarchy for every project:
+
+\`\`\`
+src/
+  main.tsx              ← DO NOT emit, handled by runtime
+  App.tsx               ← Root component, imports everything
+  index.css             ← DO NOT emit, handled by runtime
+  mockData.ts           ← ALL static/demo data lives here
+  components/
+    ui/
+      Button.tsx        ← Reusable primitives
+      Card.tsx
+    Sidebar.tsx         ← Layout structural elements
+    MetricsChart.tsx    ← Complex isolated widgets
+  hooks/
+    useLocalStorage.ts  ← Custom hooks (only if needed)
+\`\`\`
+
+## CRITICAL OUTPUT RULES — follow exactly:
+1. ALWAYS output every file using the EXACT format: \`\`\`file:src/App.tsx\n<code here>\n\`\`\`
+2. NEVER output raw code blocks like \`\`\`tsx or \`\`\`jsx — ONLY \`\`\`file:path\`\`\` format.
+3. NEVER put source code, imports, JSX, or file contents directly in the chat
+   text. Code lives ONLY inside \`\`\`file: blocks (they are hidden from the chat and
+   shown in the editor). Any code outside a file block is a BUG the user will see
+   as noise. Your chat prose must be at most one short sentence.
+4. The entry point MUST be \`src/App.tsx\` exporting \`export default function App()\`.
+5. Use bare specifiers for external libs: \`"react"\`, \`"lucide-react"\`, \`"recharts"\`.
+6. Use RELATIVE paths for your own files: \`"./mockData"\`, \`"./components/ui/Card"\`.
+7. When modifying, re-emit ONLY the changed files in \`\`\`file:path\`\`\` format.
+
+## GENERATION ALGORITHM (always follow these steps):
+
+### Step 1 — mockData.ts (if any demo data needed)
+Extract ALL static data (arrays, objects, constants) into \`src/mockData.ts\`.
+\`\`\`file:src/mockData.ts
+export interface SaleData { month: string; sales: number; }
+export const monthlySales: SaleData[] = [
+  { month: 'Jan', sales: 4000 },
+  { month: 'Feb', sales: 3000 },
+];
+\`\`\`
+
+### Step 2 — Atomic UI components (src/components/)
+Create small, reusable UI primitives first:
+\`\`\`file:src/components/ui/Card.tsx
+import React from "react";
+interface CardProps { title: string; value: string; icon: React.ReactNode; }
+export function Card({ title, value, icon }: CardProps) {
+  return (
+    <div className="p-6 bg-slate-900 border border-slate-800 rounded-xl flex items-center justify-between">
+      <div>
+        <p className="text-sm text-slate-400">{title}</p>
+        <h3 className="text-2xl font-bold text-white mt-1">{value}</h3>
+      </div>
+      <div className="p-3 bg-slate-800 rounded-lg text-blue-400">{icon}</div>
+    </div>
+  );
+}
+\`\`\`
+
+### Step 3 — Compose in App.tsx
+Import from your own files using relative paths:
+\`\`\`file:src/App.tsx
+import React, { useState } from "react";
+import { DollarSign, Users } from "lucide-react";
+import { Card } from "./components/ui/Card";
+import { monthlySales } from "./mockData";
+export default function App() {
+  const [view, setView] = useState("overview");
+  return (
+    <div className="min-h-screen bg-black text-white flex">
+      <aside className="w-64 border-r border-slate-800 p-4">
+        <button onClick={() => setView("overview")} className="w-full p-2 text-left rounded-lg hover:bg-slate-900">Overview</button>
+      </aside>
+      <main className="flex-1 p-8 grid grid-cols-2 gap-6">
+        <Card title="Revenue" value="$24,500" icon={<DollarSign size={20} />} />
+        <Card title="Users" value="1,240" icon={<Users size={20} />} />
+      </main>
+    </div>
+  );
+}
+\`\`\`
+
+## COMPONENT ISOLATION RULE
+- If the user says "fix the chart" — re-emit ONLY \`src/components/MetricsChart.tsx\`
+- If the user says "update the sidebar" — re-emit ONLY \`src/components/Sidebar.tsx\`
+- Never re-emit unchanged files
+
+## DESIGN INTERVIEW — STRICT STATE MACHINE
+A "PROJECT STATE" line is appended to these instructions on every request. It is
+AUTHORITATIVE — obey it exactly. There are three states:
+
+### STATE = ASK_DESIGN
+This is the very first message and the user has NOT already described a style.
+1. Do NOT generate any files. No \`\`\`file: blocks.
+2. In ONE short sentence (user's language), ask ONLY which visual style they prefer.
+   Do NOT ask what to build — you already know it from their message. Do NOT ask
+   multiple questions. Ask about design ONCE.
+3. End the reply with EXACTLY this machine-readable block on its own line (renders
+   as clickable chips), labels localized to the user's language, last one "Другой"/"Other":
+<design-choices>Минимализм|Тёмный дашборд|Яркий и игривый|Корпоративный|Glassmorphism|Другой</design-choices>
+
+### STATE = GENERATE_NOW
+The user has just answered the design question (their latest message is the chosen
+style), OR their first message already stated a style. You MUST now generate the
+COMPLETE project immediately — full file hierarchy (mockData.ts → components →
+App.tsx) per the rules above. It is FORBIDDEN to ask any question in this state.
+It is FORBIDDEN to reply with prose only. The reply MUST contain \`\`\`file: blocks.
+Emit at most one short sentence of intro, then the files. NEVER re-ask what to
+build or which style — the decision is already made.
+
+### STATE = EXISTING
+Files already exist. Never run the interview again. Apply the requested change
+per the COMPONENT ISOLATION RULE, re-emitting only the changed \`\`\`file: blocks.
+A "CURRENT PROJECT FILES" section is appended below — it is the LIVE state of
+the project including the user's manual edits in the editor. Base every change
+on those contents, never on older versions from this conversation.`
+
+  // Skills → extra instructions
+  const skillInstructions: string[] = []
+  if (activeSkills?.includes('web-search')) {
+    skillInstructions.push('Web Search skill: when the user asks for current information, embed a search intent marker <search>query</search> in your response and answer as if you searched the web.')
+  }
+  if (activeSkills?.includes('code-interpreter')) {
+    skillInstructions.push('Code Interpreter skill: when asked to analyse data, write Python code inside ```python blocks and simulate the execution result below it.')
+  }
+  if (activeSkills?.includes('diagrams')) {
+    skillInstructions.push('Diagrams skill: when asked for diagrams or charts, use Mermaid.js syntax inside ```mermaid blocks.')
+  }
+
+  // generateImages flag
+  const imageInstruction = generateImages === false
+    ? 'Do NOT generate or suggest image URLs. Avoid <img> tags unless absolutely necessary.'
+    : 'You may include <img> tags with descriptive alt text and placeholder src when relevant.'
+
+  // autoPermissions
+  const permissionInstruction = autoPermissions === 'allow-all'
+    ? 'AutoPermissions: ALLOW_ALL — proceed with all tool calls and side effects without asking the user for confirmation.'
+    : 'AutoPermissions: ASK — always ask the user before executing irreversible actions or tool calls.'
+
+  const instructions = [
+    'You are Aura, a helpful AI assistant. Answer in the language the user writes in.',
+    isIde ? IDE_PROMPT : HTML_PROMPT,
+    imageInstruction,
+    permissionInstruction,
+    skillInstructions.length > 0 ? skillInstructions.join('\n') : undefined,
+    activeMemories.length > 0
+      ? `User memories (facts about the user, their preferences, and coding style):\n${activeMemories.map((m, i) => `${i + 1}. ${m}`).join('\n')}`
+      : undefined,
+    prefs?.customInstructions?.trim(),
+    pluginRules.length > 0
+      ? `Active plugin rules:\n${pluginRules.map((r, i) => `${i + 1}. ${r}`).join('\n')}`
+      : undefined,
+    activeMcps.length > 0
+      ? `Active MCP servers (external tools the user has connected):\n${activeMcps.map((s) => `- ${s.name}: ${s.url}`).join('\n')}\nYou may reference these servers when the user asks to use external tools or data.`
+      : undefined,
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+
+  // Attach uploaded files: images as vision content, text files injected as text parts
+  let enrichedMessage = message
+  if (files && files.length > 0) {
+    const textFiles = files.filter((f) => !f.type.startsWith('image/'))
+    const imageFiles = files.filter((f) => f.type.startsWith('image/'))
+
+    const extraParts: Array<Record<string, unknown>> = []
+
+    for (const tf of textFiles) {
+      // Decode base64 data URL to text
+      const base64 = tf.dataUrl.split(',')[1] ?? ''
+      const decoded = Buffer.from(base64, 'base64').toString('utf-8').slice(0, 8000)
+      extraParts.push({ type: 'text', text: `[Attached file: ${tf.name}]\n\`\`\`\n${decoded}\n\`\`\`` })
+    }
+
+    for (const img of imageFiles) {
+      // Pass image as base64 image part (AI SDK multimodal)
+      const base64 = img.dataUrl.split(',')[1] ?? ''
+      extraParts.push({ type: 'image', image: base64, mimeType: img.type })
+    }
+
+    if (extraParts.length > 0) {
+      enrichedMessage = {
+        ...message,
+        parts: [...(message.parts ?? []), ...extraParts],
+      } as UIMessage
+    }
+  }
+
+  const storedMessages = await loadChatMessagesFresh(id)
+
+  // Regenerate/retry dedupe: when the client re-sends a message that already
+  // exists in history (useChat regenerate re-posts the last user message),
+  // drop the stored copy AND everything after it — otherwise the model sees
+  // the old assistant answer plus a duplicated user turn.
+  const dupIdx = storedMessages.findIndex((m) => m.id === enrichedMessage.id)
+  const previousMessages =
+    dupIdx >= 0 ? storedMessages.slice(0, dupIdx) : storedMessages
+  const allMessages = [...previousMessages, enrichedMessage]
+
+  // ---- Deterministic design-interview state machine (server-authoritative) ----
+  // The model is unreliable at tracking interview state on its own (it re-asked
+  // "what to build / which style" in a loop). We compute the state from history:
+  const assistantMessages = previousMessages.filter((m) => m.role === 'assistant')
+  const assistantText = (m: UIMessage) =>
+    (m.parts ?? [])
+      .filter((p) => p.type === 'text')
+      .map((p) => (p as { text: string }).text)
+      .join('\n')
+
+  // The persistent FS is loaded up front: it both detects EXISTING projects
+  // (e.g. a chat that got files via import/seed without any messages) and
+  // feeds the live file contents into the model context below.
+  const projectFs = isIde ? await loadProjectFiles(id) : {}
+
+  const designState = deriveDesignState({
+    hasProjectFiles: Object.keys(projectFs).length > 0,
+    assistantTexts: assistantMessages.map(assistantText),
+  })
+
+  // ---- Current project files → model context -------------------------------
+  // The DB is the source of truth for the virtual FS (it includes the user's
+  // MANUAL edits from Monaco, which message history does not). Give the model
+  // the live state so it never overwrites user edits with stale code.
+  let filesContext = ''
+  if (isIde && designState === 'EXISTING') {
+    const entries = Object.entries(projectFs)
+    if (entries.length > 0) {
+      const MAX_TOTAL = 48_000
+      const MAX_PER_FILE = 8_000
+      let budget = MAX_TOTAL
+      const sections: string[] = []
+      for (const [path, content] of entries) {
+        if (budget <= 0) {
+          sections.push(`// …${entries.length - sections.length} more files omitted`)
+          break
+        }
+        const slice = content.slice(0, Math.min(MAX_PER_FILE, budget))
+        const truncated = slice.length < content.length ? '\n// …truncated' : ''
+        sections.push(`--- ${path} ---\n${slice}${truncated}`)
+        budget -= slice.length
+      }
+      filesContext = `\n\nCURRENT PROJECT FILES (ground truth — includes the user's manual edits made in the editor; treat these as the latest code, NOT your own older messages):\n${sections.join('\n\n')}`
+    }
+  }
+
+  const finalInstructions = isIde
+    ? `${instructions}\n\nPROJECT STATE: ${designState}${filesContext}`
+    : instructions
+
+  const isFirstExchange = previousMessages.length === 0
+  const firstUserText = (enrichedMessage.parts ?? [])
+    .filter((p) => p.type === 'text')
+    .map((p) => (p as { text: string }).text)
+    .join(' ')
+    .slice(0, 300)
+
+  // Bound the history sent to the model: on long chats the full transcript is
+  // needless cost/latency (design state + live files already come from the DB
+  // and are injected above). Keep the trailing window + the new message.
+  const MODEL_HISTORY_WINDOW = 24
+  const windowedMessages =
+    allMessages.length > MODEL_HISTORY_WINDOW
+      ? allMessages.slice(-MODEL_HISTORY_WINDOW)
+      : allMessages
+
+  try {
+    const result = streamText({
+      model,
+      instructions: finalInstructions,
+      messages: await convertToModelMessages(windowedMessages),
+      onFinish: ({ usage }) => {
+        // Token accounting — per account (guests too). Own-key usage carries
+        // the key id; built-in Gateway usage has apiKeyId NULL (rate-limited).
+        const u = usage as unknown as {
+          inputTokens?: number
+          outputTokens?: number
+          promptTokens?: number
+          completionTokens?: number
+        }
+        void recordTokenUsage({
+          userId,
+          chatId: id,
+          apiKeyId: usedApiKeyId,
+          modelId: usedModelName,
+          promptTokens: u?.inputTokens ?? u?.promptTokens ?? 0,
+          completionTokens: u?.outputTokens ?? u?.completionTokens ?? 0,
+        })
+      },
+    })
+
+    return createUIMessageStreamResponse({
+      stream: toUIMessageStream({
+        stream: result.stream,
+        originalMessages: allMessages,
+        onEnd: ({ messages: savedMessages }) => {
+          void saveChatMessages(id, savedMessages)
+          // Keep the persistent virtual FS in sync with what the model just
+          // generated — even if the user closes the tab mid-stream. When the
+          // reply changed files, snapshot a version checkpoint (history/rollback).
+          const lastAssistant = savedMessages[savedMessages.length - 1]
+          const emittedFiles =
+            lastAssistant?.role === 'assistant' &&
+            (lastAssistant.parts ?? []).some(
+              (p) => p.type === 'text' && (p as { text: string }).text.includes('```file:'),
+            )
+          void upsertProjectFilesFromMessages(id, savedMessages)
+            .then(() => {
+              if (emittedFiles) {
+                return createCheckpoint(id, firstUserText.slice(0, 80) || 'AI changes')
+              }
+            })
+            .catch(() => {})
+
+          // Memory auto-extraction (opt-in via Settings → Memory)
+          const assistantReplyText =
+            lastAssistant?.role === 'assistant'
+              ? (lastAssistant.parts ?? [])
+                  .filter((p) => p.type === 'text')
+                  .map((p) => (p as { text: string }).text)
+                  .join('\n')
+              : ''
+          if (firstUserText && assistantReplyText) {
+            void extractMemoriesFromExchange({
+              userId,
+              model,
+              userText: firstUserText,
+              assistantText: assistantReplyText,
+            })
+          }
+
+          // Auto-title after the FIRST exchange: short, human-readable name
+          // instead of the raw truncated prompt. Best-effort — any failure
+          // (billing, network) silently keeps the old title.
+          if (isFirstExchange && firstUserText) {
+            void (async () => {
+              try {
+                const { text } = await generateText({
+                  model,
+                  prompt: `Придумай короткое название проекта (2–4 слова, без кавычек, без точки в конце) по запросу пользователя: "${firstUserText}". Ответь ТОЛЬКО названием, на языке запроса.`,
+                })
+                const title = text.trim().replace(/^["'«]+|["'»]+$/g, '').slice(0, 60)
+                if (title && title.length >= 3) {
+                  await db.update(chats).set({ title }).where(eq(chats.id, id))
+                  revalidateTag('chats', 'max')
+                }
+              } catch {
+                /* keep default title */
+              }
+            })()
+          }
+        },
+      }),
+    })
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    const isGatewayBilling =
+      msg.includes('credit card') || msg.includes('customer_verification_required')
+    if (isGatewayBilling) {
+      return new Response(
+        JSON.stringify({
+          error: 'gateway_billing',
+          message:
+            'Для использования встроенных моделей Aura необходимо привязать карту в Vercel AI Gateway. Перейдите на страницу «Мои API», добавьте свой API-ключ и выберите его в селекторе модели.',
+        }),
+        { status: 402, headers: { 'Content-Type': 'application/json' } },
+      )
+    }
+    throw err
+  }
+}
