@@ -57,6 +57,7 @@ import {
 } from '@/app/actions/checkpoints'
 import { deleteChat, duplicateChat, renameChat } from '@/app/actions/chats'
 import { downloadZip } from '@/lib/zip'
+import { parseAnsi } from '@/lib/ansi'
 import type { CheckpointListItem } from '@/lib/chat-store'
 import useSWR from 'swr'
 import { getPreferences } from '@/app/actions/preferences'
@@ -420,6 +421,9 @@ function BottomPanel({
   onSubmit,
   onClose,
   onFix,
+  running = false,
+  onInterrupt,
+  focusTerminalEpoch = 0,
 }: {
   entries: PreviewConsoleEntry[]
   onClear: () => void
@@ -428,9 +432,17 @@ function BottomPanel({
   onClose: () => void
   /** Send an error to the chat for the AI to fix. */
   onFix?: (errorText: string) => void
+  /** A real command is streaming (enables the interrupt button / Ctrl+C). */
+  running?: boolean
+  onInterrupt?: () => void
+  /** Bump to force-focus the Terminal tab (a command started running). */
+  focusTerminalEpoch?: number
 }) {
   const { t } = useLanguage()
   const [tab, setTab] = useState<BottomTab>('logs')
+  useEffect(() => {
+    if (focusTerminalEpoch > 0) setTab('terminal')
+  }, [focusTerminalEpoch])
   const [filter, setFilter] = useState('')
   const [input, setInput] = useState('')
   const [history, setHistory] = useState<string[]>([])
@@ -567,7 +579,15 @@ function BottomPanel({
                 <span className="shrink-0 select-none text-zinc-600">{formatTs(e.ts)}</span>
               )}
               <span className="min-w-0 flex-1">
-                {e.level === 'result' ? `⟵ ${e.text}` : e.text}
+                {e.level === 'result'
+                  ? `⟵ ${e.text}`
+                  : tab === 'terminal'
+                    ? parseAnsi(e.text).map((s, i) => (
+                        <span key={i} className={s.className}>
+                          {s.text}
+                        </span>
+                      ))
+                    : e.text}
                 {e.level === 'error' && onFix && (
                   <button
                     type="button"
@@ -587,13 +607,20 @@ function BottomPanel({
       {/* Terminal prompt (terminal tab only) */}
       {tab === 'terminal' && (
         <div className="flex shrink-0 items-center gap-2 border-t border-zinc-800 px-3 py-1.5">
-          <span className="font-mono text-xs text-emerald-400">❯</span>
+          <span className={`font-mono text-xs ${running ? 'text-amber-400' : 'text-emerald-400'}`}>
+            {running ? '◌' : '❯'}
+          </span>
           <input
             ref={inputRef}
             value={input}
-            placeholder="ls, cat <файл>, help или JS-выражение (консоль превью)"
+            placeholder={running ? 'выполняется… Ctrl+C для остановки' : 'npm i, git status, node -v, ls, help…'}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
+              if (e.key === 'c' && (e.ctrlKey || e.metaKey) && running) {
+                e.preventDefault()
+                onInterrupt?.()
+                return
+              }
               if (e.key === 'Enter') submit()
               else if (e.key === 'ArrowUp') {
                 e.preventDefault()
@@ -626,7 +653,7 @@ function BottomPanel({
 
 // --- panel -------------------------------------------------------------------
 
-type PanelTab = 'preview' | 'design' | 'code'
+type PanelTab = 'preview' | 'design' | 'live' | 'code'
 
 const NEW_FILE_TEMPLATE = (path: string): string => {
   if (path.endsWith('.tsx')) {
@@ -986,43 +1013,104 @@ export function IdePanel({
   }
 
   // Run a real command in the project (Docker container, host fallback) and
-  // stream the output into the terminal. Used by the Terminal tab and later
-  // by AI tool-calls.
+  // stream the output into the terminal. Used by the Terminal tab AND by the
+  // AI (chat <run> markers). Returns the streamed output (ANSI stripped) so
+  // callers can feed results back to the model.
+  const termAbortRef = useRef<AbortController | null>(null)
+  const [termRunning, setTermRunning] = useState(false)
+  // Bumped to pull the bottom panel to the Terminal tab (e.g. AI ran a command)
+  const [focusTermEpoch, setFocusTermEpoch] = useState(0)
+  const interruptTerminal = useCallback(() => {
+    termAbortRef.current?.abort()
+  }, [])
+
   const runRealCommand = useCallback(
-    async (line: string) => {
+    async (line: string): Promise<string> => {
       if (!chatId) {
         appendEntry('error', 'Терминал доступен только в сохранённом проекте', 'term')
-        return
+        return ''
       }
+      const controller = new AbortController()
+      termAbortRef.current = controller
+      setTermRunning(true)
+      setConsoleOpen(true)
+      setFocusTermEpoch((e) => e + 1)
+      let full = ''
+      let emitted = 0
+      let plain = ''
+      const MARKER = '\n[aura:files]'
       try {
         const res = await fetch('/api/terminal', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ chatId, command: line }),
+          signal: controller.signal,
         })
         if (!res.ok || !res.body) {
           appendEntry('error', `Терминал недоступен (HTTP ${res.status})`, 'term')
-          return
+          return ''
         }
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
         for (;;) {
           const { done, value } = await reader.read()
           if (done) break
-          const chunk = decoder.decode(value, { stream: true })
-          if (chunk) appendEntry('log', chunk.replace(/\n$/, ''), 'term')
+          full += decoder.decode(value, { stream: true })
+          // The reverse-sync marker (…[aura:files]{json}) tails the stream —
+          // everything before it is terminal output shown live.
+          const markerAt = full.indexOf(MARKER)
+          const visibleEnd = markerAt === -1 ? full.length : markerAt
+          if (visibleEnd > emitted) {
+            const delta = full.slice(emitted, visibleEnd)
+            emitted = visibleEnd
+            plain += delta
+            appendEntry('log', delta, 'term')
+          }
+        }
+        // Apply reverse sync: merge disk files into the editor (adds new files
+        // like package.json/lockfiles; never deletes existing ones).
+        const markerAt = full.indexOf(MARKER)
+        if (markerAt !== -1) {
+          const json = full.slice(markerAt + MARKER.length).trim()
+          try {
+            const files = JSON.parse(json) as Record<string, string>
+            if (files && typeof files === 'object') {
+              setLocalFiles((prev) => {
+                const next = new Map(prev)
+                for (const [p, c] of Object.entries(files)) next.set(p, c)
+                return next
+              })
+            }
+          } catch {
+            /* malformed marker — ignore */
+          }
         }
       } catch (err) {
-        appendEntry(
-          'error',
-          `Ошибка терминала: ${err instanceof Error ? err.message : 'unknown'}`,
-          'term',
-        )
+        if ((err as Error)?.name === 'AbortError') {
+          appendEntry('warn', '^C прервано', 'term')
+        } else {
+          appendEntry('error', `Ошибка терминала: ${err instanceof Error ? err.message : 'unknown'}`, 'term')
+        }
+      } finally {
+        setTermRunning(false)
+        termAbortRef.current = null
       }
+      return plain
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [chatId],
   )
+
+  // Expose the runner so the chat (AI <run> markers) can execute commands.
+  useEffect(() => {
+    if (!chatId) return
+    const w = window as unknown as Record<string, unknown>
+    const key = `__auraRun_${chatId}`
+    w[key] = (line: string) => runRealCommand(line)
+    return () => {
+      delete w[key]
+    }
+  }, [chatId, runRealCommand])
 
   // Console line. Built-ins (clear/help/ls/cat) and JS eval run instantly in
   // the browser; everything else is a REAL command executed in the project
@@ -1315,6 +1403,7 @@ export function IdePanel({
 
   const showPreview = tab === 'preview' || tab === 'design'
   const showCode = tab === 'code'
+  const showLive = tab === 'live'
 
   // Toggle the preview's design-select mode when entering/leaving the tab —
   // or when plan mode turns it on for the regular preview tab.
@@ -1331,7 +1420,52 @@ export function IdePanel({
     preview: t('idePreviewTab'),
     design: t('ideDesignTab'),
     code: t('ideCodeTab'),
+    live: t('ideLiveTab'),
   }
+
+  // ---- Live preview: real dev server (npm run dev in the project) ----------
+  const [liveUrl, setLiveUrl] = useState<string | null>(null)
+  const [liveState, setLiveState] = useState<'off' | 'starting' | 'on'>('off')
+  const [liveReloadKey, setLiveReloadKey] = useState(0)
+  const startLive = useCallback(async () => {
+    if (!chatId || liveState === 'starting') return
+    setLiveState('starting')
+    try {
+      const res = await fetch('/api/preview-server', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, action: 'start' }),
+      })
+      const data = (await res.json()) as { ok: boolean; url?: string | null }
+      if (data.ok && data.url) {
+        setLiveUrl(data.url)
+        setLiveState('on')
+        // Dev server needs a moment to boot before the first successful load.
+        setTimeout(() => setLiveReloadKey((k) => k + 1), 2500)
+      } else {
+        setLiveState('off')
+      }
+    } catch {
+      setLiveState('off')
+    }
+  }, [chatId, liveState])
+  const stopLive = useCallback(async () => {
+    if (!chatId) return
+    setLiveState('off')
+    setLiveUrl(null)
+    try {
+      await fetch('/api/preview-server', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, action: 'stop' }),
+      })
+    } catch {}
+  }, [chatId])
+  // Auto-start the dev server the first time the Live tab is opened.
+  useEffect(() => {
+    if (showLive && liveState === 'off') void startLive()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showLive])
 
   return (
     <section className="relative flex min-w-0 flex-1 flex-col bg-muted/30">
@@ -1347,9 +1481,9 @@ export function IdePanel({
           <PanelLeft className="size-4" />
         </Button>
 
-        {/* Tab switcher — Preview / Design / Code */}
+        {/* Tab switcher — Preview / Design / Live / Code */}
         <div className="flex items-center rounded-lg border border-border bg-muted/50 p-0.5 text-xs">
-          {(['preview', 'design', 'code'] as PanelTab[]).map((t_) => (
+          {(['preview', 'design', 'live', 'code'] as PanelTab[]).map((t_) => (
             <button
               key={t_}
               type="button"
@@ -1674,8 +1808,9 @@ export function IdePanel({
                 )}
 
                 {/* Preview pane — kept MOUNTED (css-hidden on Code tab) so the
-                    runtime stays warm and the console keeps streaming. */}
-                <div className={`min-h-0 flex-1 flex-col ${showPreview ? 'flex' : 'hidden'}`}>
+                    runtime stays warm and the console keeps streaming. The
+                    Live overlay renders on top when the Live tab is active. */}
+                <div className={`relative min-h-0 flex-1 flex-col ${showPreview || showLive ? 'flex' : 'hidden'}`}>
                   {/* Browser-style address bar */}
                   <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-border bg-background px-2">
                     <button
@@ -1754,6 +1889,75 @@ export function IdePanel({
                     />
                   </div>
                 </div>
+
+                {/* Live tab — real dev server (Vite/Next in the container) */}
+                {showLive && (
+                  <div className="absolute inset-0 z-10 flex flex-col bg-background">
+                    <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-2">
+                      <span
+                        className={`size-1.5 rounded-full ${
+                          liveState === 'on'
+                            ? 'bg-emerald-500'
+                            : liveState === 'starting'
+                              ? 'bg-amber-500 animate-pulse'
+                              : 'bg-muted-foreground/40'
+                        }`}
+                      />
+                      <span className="truncate font-mono text-[11px] text-muted-foreground">
+                        {liveUrl ?? t('ideLiveOff')}
+                      </span>
+                      <span className="ml-auto flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setLiveReloadKey((k) => k + 1)}
+                          disabled={liveState !== 'on'}
+                          title={t('ideLiveReload')}
+                          className="rounded p-1 text-muted-foreground/70 hover:text-foreground disabled:opacity-40"
+                        >
+                          <RotateCw className="size-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => (liveState === 'on' ? void stopLive() : void startLive())}
+                          className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground"
+                        >
+                          {liveState === 'on' ? t('ideLiveStop') : t('ideLiveStart')}
+                        </button>
+                      </span>
+                    </div>
+                    <div className="relative min-h-0 flex-1 bg-background">
+                      {liveState === 'on' && liveUrl ? (
+                        <iframe
+                          key={liveReloadKey}
+                          title="Live preview"
+                          src={liveUrl}
+                          className="h-full w-full border-0"
+                        />
+                      ) : (
+                        <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-muted-foreground">
+                          {liveState === 'starting' ? (
+                            <>
+                              <Loader2 className="size-6 animate-spin" />
+                              <p className="text-sm">{t('ideLiveStarting')}</p>
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="size-6" />
+                              <p className="max-w-xs text-sm text-pretty">{t('ideLiveHint')}</p>
+                              <button
+                                type="button"
+                                onClick={() => void startLive()}
+                                className="rounded-md border border-border px-3 py-1.5 text-xs text-foreground hover:bg-accent"
+                              >
+                                {t('ideLiveStart')}
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
             </>
@@ -1768,6 +1972,9 @@ export function IdePanel({
               onSubmit={handleConsoleSubmit}
               onClose={() => setConsoleOpen(false)}
               onFix={onFixError}
+              running={termRunning}
+              onInterrupt={interruptTerminal}
+              focusTerminalEpoch={focusTermEpoch}
             />
           )}
         </div>

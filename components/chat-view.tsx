@@ -18,7 +18,7 @@ const IdePanel = dynamic(() => import('@/components/ide-panel').then((m) => m.Id
   ssr: false,
 })
 import type { ChatMode } from '@/lib/chat-store'
-import { CheckCircle2, Code2, Eye, History, Loader2, MessageSquare, Pencil, Play, RotateCcw } from 'lucide-react'
+import { CheckCircle2, Code2, Eye, History, Loader2, MessageSquare, Pencil, Play, RotateCcw, Terminal } from 'lucide-react'
 import { rollbackToMessage, truncateChatFromMessage } from '@/app/actions/checkpoints'
 
 // --- HTML extraction -------------------------------------------------------
@@ -178,6 +178,19 @@ const EXIT_PLAN_STRIP_RE = /<exit-plan\s*\/?>/g
 const NEXT_STEPS_RE = /<next-steps>([\s\S]*?)<\/next-steps>/
 const NEXT_STEPS_STRIP_RE = /<next-steps>[\s\S]*?(?:<\/next-steps>|$)/g
 
+// Shell commands the model wants to run in the project terminal.
+const RUN_RE = /<run>([\s\S]*?)<\/run>/g
+const RUN_STRIP_RE = /<run>[\s\S]*?(?:<\/run>|$)/g
+
+function extractRunCommands(text: string): string[] {
+  const out: string[] = []
+  for (const m of text.matchAll(RUN_RE)) {
+    const cmd = m[1].trim()
+    if (cmd) out.push(cmd.slice(0, 2000))
+  }
+  return out.slice(0, 10)
+}
+
 function extractNextSteps(messages: UIMessage[]): string[] | null {
   if (messages.length === 0) return null
   const last = messages[messages.length - 1]
@@ -216,6 +229,7 @@ function MessageText({
         .replace(GENERIC_CHOICES_STRIP_RE, '')
         .replace(NEXT_STEPS_STRIP_RE, '')
         .replace(EXIT_PLAN_STRIP_RE, '')
+        .replace(RUN_STRIP_RE, '')
         .trimEnd(),
     [rawText],
   )
@@ -352,6 +366,18 @@ export function ChatView({
   // Plan mode is live (not only at submit): it enables element picking in the
   // preview so the user can point at components while discussing the plan.
   const [planModeActive, setPlanModeActive] = useState(false)
+  // Latest autoPermissions ('ask' | 'allow-all') from the prompt box — gates
+  // whether AI <run> commands execute automatically or need a click.
+  const [autoPermissions, setAutoPermissions] = useState<'ask' | 'allow-all'>('ask')
+  // AI terminal commands already handled (id `${messageId}#${idx}`) — skip or run.
+  const [handledCmds, setHandledCmds] = useState<Set<string>>(() => new Set())
+  const runCmd = (raw: string) => {
+    setChatCollapsed(true) // reveal the IDE panel/terminal on mobile
+    const bridge = (window as unknown as Record<string, ((c: string) => Promise<string>) | undefined>)[
+      `__auraRun_${chatId}`
+    ]
+    if (bridge) void bridge(raw)
+  }
   const bottomRef = useRef<HTMLDivElement>(null)
   const sentPendingRef = useRef(false)
   const [chatCollapsed, setChatCollapsed] = useState(false)
@@ -529,6 +555,7 @@ export function ChatView({
         ? `api-${firstApiKeyId}`
         : payload.modelId
     modelRef.current = resolvedModelId
+    setAutoPermissions(payload.autoPermissions === 'allow-all' ? 'allow-all' : 'ask')
     extrasRef.current = {
       files: payload.files,
       generateImages: payload.generateImages,
@@ -574,6 +601,32 @@ export function ChatView({
       .join('\n')
     if (EXIT_PLAN_RE.test(text)) setPlanModeActive(false)
   }, [busy, messages, planModeActive])
+
+  // Auto-run AI <run> commands when the user granted «Разрешить всё».
+  useEffect(() => {
+    if (busy || readOnly || mode !== 'ide' || autoPermissions !== 'allow-all') return
+    if (messages.length === 0) return
+    const last = messages[messages.length - 1]
+    if (last.role !== 'assistant') return
+    const text = last.parts
+      .filter((p) => p.type === 'text')
+      .map((p) => (p as { text: string }).text)
+      .join('\n')
+    const cmds = extractRunCommands(text)
+    if (cmds.length === 0) return
+    setHandledCmds((prev) => {
+      const next = new Set(prev)
+      cmds.forEach((cmd, i) => {
+        const key = `${last.id}#${i}`
+        if (!next.has(key)) {
+          next.add(key)
+          runCmd(cmd)
+        }
+      })
+      return next
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy, messages, autoPermissions, readOnly, mode])
 
   // Open a file pill from the chat in the editor (mobile: reveal the panel)
   const handleOpenFile = (path: string) => {
@@ -724,6 +777,64 @@ export function ChatView({
                           />
                         ) : null,
                       )}
+                      {/* AI terminal commands (ask mode: Run/Skip per command) */}
+                      {message.role === 'assistant' &&
+                        mode === 'ide' &&
+                        !readOnly &&
+                        autoPermissions === 'ask' &&
+                        (() => {
+                          const text = message.parts
+                            .filter((p) => p.type === 'text')
+                            .map((p) => (p as { text: string }).text)
+                            .join('\n')
+                          const cmds = extractRunCommands(text)
+                          if (cmds.length === 0) return null
+                          return (
+                            <div className="mt-2 flex flex-col gap-1.5">
+                              {cmds.map((cmd, i) => {
+                                const key = `${message.id}#${i}`
+                                const handled = handledCmds.has(key)
+                                return (
+                                  <div
+                                    key={key}
+                                    className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-2.5 py-1.5"
+                                  >
+                                    <Terminal className="size-3.5 shrink-0 text-muted-foreground" />
+                                    <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground">
+                                      {cmd}
+                                    </code>
+                                    {handled ? (
+                                      <span className="flex items-center gap-1 text-[11px] text-emerald-600 dark:text-emerald-400">
+                                        <CheckCircle2 className="size-3.5" />
+                                        {t('runCmdRunning')}
+                                      </span>
+                                    ) : (
+                                      <>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setHandledCmds((p) => new Set(p).add(key))
+                                            runCmd(cmd)
+                                          }}
+                                          className="rounded-md bg-foreground px-2 py-0.5 text-[11px] font-medium text-background transition-all active:scale-95"
+                                        >
+                                          {t('runCmdRun')}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => setHandledCmds((p) => new Set(p).add(key))}
+                                          className="rounded-md px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground"
+                                        >
+                                          {t('runCmdSkip')}
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )
+                        })()}
                       {/* Per-reply work summary: duration · files · lines · tokens */}
                       {message.role === 'assistant' &&
                         (() => {

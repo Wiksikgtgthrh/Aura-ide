@@ -22,8 +22,10 @@ const csp = [
   "style-src 'self' 'unsafe-inline' https:",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data: https:",
-  "connect-src 'self' https:",
-  "frame-src 'self' blob:",
+  // http://localhost:* + ws: — the Live-preview dev server (Vite/Next) runs on
+  // a localhost port and uses a WebSocket for HMR.
+  "connect-src 'self' https: http://localhost:* ws://localhost:*",
+  "frame-src 'self' blob: http://localhost:*",
   "worker-src 'self' blob:",
   "object-src 'none'",
   "base-uri 'self'",
