@@ -708,7 +708,6 @@ function BottomPanel({
                 }
               }
             }}
-            placeholder={t('ideConsoleEval')}
             className="flex-1 bg-transparent font-mono text-[11px] text-zinc-100 outline-none placeholder:text-zinc-600"
             spellCheck={false}
           />

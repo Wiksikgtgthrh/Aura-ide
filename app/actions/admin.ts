@@ -11,6 +11,9 @@ import {
   plans,
   platformApiKeys,
   transactions,
+  plugins,
+  pluginAccess,
+  userPlugins,
 } from '@/lib/db/schema'
 import { and, asc, desc, eq, ilike, or, sql } from 'drizzle-orm'
 import { decryptSecret, encryptSecret, isEncrypted } from '@/lib/crypto'
@@ -198,6 +201,42 @@ export async function setUserRole(userId: string, role: Role): Promise<boolean> 
   return true
 }
 
+// ---- Audit log --------------------------------------------------------------
+
+export type AuditRow = {
+  id: string
+  actor: string
+  action: string
+  targetId: string
+  createdAt: string
+}
+
+export async function getAuditLog(): Promise<AuditRow[] | null> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return null
+  const rows = await db
+    .select({
+      id: adminAudit.id,
+      actorId: adminAudit.actorId,
+      action: adminAudit.action,
+      targetId: adminAudit.targetId,
+      createdAt: adminAudit.createdAt,
+      actorName: user.name,
+      actorUsername: user.username,
+    })
+    .from(adminAudit)
+    .leftJoin(user, eq(user.id, adminAudit.actorId))
+    .orderBy(desc(adminAudit.createdAt))
+    .limit(100)
+  return rows.map((r) => ({
+    id: r.id,
+    actor: r.actorUsername ? `@${r.actorUsername}` : r.actorName ?? r.actorId.slice(0, 8),
+    action: r.action,
+    targetId: r.targetId,
+    createdAt: r.createdAt.toISOString(),
+  }))
+}
+
 // ---- Plans / tariffs --------------------------------------------------------
 
 export type AdminPlan = {
@@ -363,6 +402,164 @@ export async function deletePlanApiKey(id: string): Promise<boolean> {
   if (!actor) return false
   await db.delete(platformApiKeys).where(eq(platformApiKeys.id, id))
   await audit(actor.id, 'delete_plan_key', id)
+  return true
+}
+
+// ---- Plugins ----------------------------------------------------------------
+
+export type AdminPlugin = {
+  id: string
+  slug: string
+  name: string
+  description: string
+  author: string
+  version: string
+  type: string
+  scope: string
+  icon: string
+  priceRub: number
+  hidden: boolean
+  docs: string
+  manifest: string // JSON stringified for editing
+  installs: number
+}
+
+export async function listAllPlugins(): Promise<AdminPlugin[] | null> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return null
+  const rows = await db.select().from(plugins).orderBy(asc(plugins.name))
+  const installStats = await db
+    .select({ pluginId: userPlugins.pluginId, n: sql<number>`count(*)::int` })
+    .from(userPlugins)
+    .groupBy(userPlugins.pluginId)
+  const byPlugin = new Map(installStats.map((s) => [s.pluginId, s.n]))
+  return rows.map((r) => ({
+    id: r.id,
+    slug: r.slug,
+    name: r.name,
+    description: r.description,
+    author: r.author,
+    version: r.version,
+    type: r.type,
+    scope: r.scope,
+    icon: r.icon,
+    priceRub: r.priceRub ?? 0,
+    hidden: !!r.hidden,
+    docs: r.docs ?? '',
+    manifest: JSON.stringify(r.manifest ?? {}, null, 2),
+    installs: byPlugin.get(r.id) ?? 0,
+  }))
+}
+
+export async function upsertPlugin(input: {
+  id?: string
+  slug: string
+  name: string
+  description: string
+  author: string
+  version: string
+  type: string
+  scope: string
+  icon: string
+  priceRub: number
+  hidden: boolean
+  docs: string
+  manifest: string
+}): Promise<{ ok: boolean; error?: string }> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return { ok: false, error: 'forbidden' }
+  const slug = input.slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 60)
+  if (!slug || !input.name.trim()) return { ok: false, error: 'slug and name required' }
+  let manifest: object = {}
+  if (input.manifest.trim()) {
+    try {
+      manifest = JSON.parse(input.manifest)
+    } catch {
+      return { ok: false, error: 'Некорректный JSON в манифесте' }
+    }
+  }
+  const values = {
+    slug,
+    name: input.name.trim().slice(0, 100),
+    description: input.description.slice(0, 500),
+    author: input.author.trim().slice(0, 100) || 'Aura Team',
+    version: input.version.trim().slice(0, 20) || '1.0.0',
+    type: input.type,
+    scope: input.scope,
+    icon: input.icon.trim().slice(0, 40) || 'Puzzle',
+    priceRub: Math.max(0, Math.round(input.priceRub) || 0),
+    hidden: !!input.hidden,
+    docs: input.docs.slice(0, 10000),
+    manifest: manifest as object,
+    updatedAt: new Date(),
+  }
+  if (input.id) {
+    await db.update(plugins).set(values).where(eq(plugins.id, input.id))
+  } else {
+    await db.insert(plugins).values(values).onConflictDoUpdate({ target: plugins.slug, set: values })
+  }
+  await audit(actor.id, 'upsert_plugin', input.id ?? slug)
+  return { ok: true }
+}
+
+export async function deletePlugin(id: string): Promise<boolean> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return false
+  await db.delete(plugins).where(eq(plugins.id, id))
+  await audit(actor.id, 'delete_plugin', id)
+  return true
+}
+
+export type PluginGrant = { id: string; userId: string; label: string }
+
+export async function listPluginAccess(pluginId: string): Promise<PluginGrant[] | null> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return null
+  const rows = await db
+    .select({
+      id: pluginAccess.id,
+      userId: pluginAccess.userId,
+      name: user.name,
+      username: user.username,
+    })
+    .from(pluginAccess)
+    .leftJoin(user, eq(user.id, pluginAccess.userId))
+    .where(eq(pluginAccess.pluginId, pluginId))
+  return rows.map((r) => ({
+    id: r.id,
+    userId: r.userId,
+    label: r.username ? `@${r.username}` : r.name ?? r.userId.slice(0, 8),
+  }))
+}
+
+/** Grant a hidden plugin to a user, found by @username or email. */
+export async function grantPluginAccess(
+  pluginId: string,
+  identifier: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return { ok: false, error: 'forbidden' }
+  const id = identifier.trim().replace(/^@/, '').toLowerCase()
+  if (!id) return { ok: false, error: 'empty' }
+  const [target] = await db
+    .select({ id: user.id })
+    .from(user)
+    .where(or(ilike(user.username, id), ilike(user.email, id)))
+    .limit(1)
+  if (!target) return { ok: false, error: 'Пользователь не найден' }
+  await db
+    .insert(pluginAccess)
+    .values({ pluginId, userId: target.id })
+    .onConflictDoNothing()
+  await audit(actor.id, 'grant_plugin', pluginId, { userId: target.id })
+  return { ok: true }
+}
+
+export async function revokePluginAccess(grantId: string): Promise<boolean> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return false
+  await db.delete(pluginAccess).where(eq(pluginAccess.id, grantId))
+  await audit(actor.id, 'revoke_plugin', grantId)
   return true
 }
 

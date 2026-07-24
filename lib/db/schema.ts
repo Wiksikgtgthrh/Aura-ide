@@ -367,6 +367,10 @@ export const plugins = pgTable('plugins', {
   scope: text('scope').notNull().default('ide-component'), // 'ide-component' | 'ai-skill' | 'system-ui'
   icon: text('icon').notNull().default('Puzzle'),
   manifest: jsonb('manifest').notNull().default({}),
+  // Admin marketplace fields (added by migrate-admin).
+  priceRub: integer('priceRub').notNull().default(0),
+  hidden: boolean('hidden').notNull().default(false),
+  docs: text('docs').notNull().default(''),
   publishedAt: timestamp('publishedAt').notNull().defaultNow(),
   updatedAt: timestamp('updatedAt').notNull().defaultNow(),
 })

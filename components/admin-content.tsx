@@ -16,6 +16,9 @@ import {
   Cpu,
   MemoryStick,
   Loader2,
+  Pencil,
+  Trash2,
+  X,
 } from 'lucide-react'
 import {
   getAdminOverview,
@@ -31,11 +34,21 @@ import {
   listPlanApiKeys,
   addPlanApiKey,
   deletePlanApiKey,
+  getAuditLog,
+  listAllPlugins,
+  upsertPlugin,
+  deletePlugin,
+  listPluginAccess,
+  grantPluginAccess,
+  revokePluginAccess,
   type AdminOverview,
   type AdminUserRow,
   type AdminUserDetail,
   type AdminPlan,
   type AdminPlanKey,
+  type AuditRow,
+  type AdminPlugin,
+  type PluginGrant,
 } from '@/app/actions/admin'
 import type { Role } from '@/lib/admin'
 import type { PlatformLimits } from '@/lib/platform-settings'
@@ -94,9 +107,14 @@ export function AdminContent({ isSuperadmin }: { isSuperadmin: boolean }) {
       <div className="mt-6">
         {tab === 'overview' && <OverviewTab />}
         {tab === 'users' && <UsersTab isSuperadmin={isSuperadmin} />}
-        {tab === 'admins' && <UsersTab isSuperadmin={isSuperadmin} adminsOnly />}
+        {tab === 'admins' && (
+          <div className="flex flex-col gap-8">
+            <UsersTab isSuperadmin={isSuperadmin} adminsOnly />
+            <AuditLog />
+          </div>
+        )}
         {tab === 'plans' && <PlansTab />}
-        {tab === 'plugins' && <ComingTab title="Плагины" note="Загрузка плагинов, цены, авторы, документация и скрытые плагины — в следующей фазе." />}
+        {tab === 'plugins' && <PluginsTab />}
         {tab === 'limits' && <LimitsTab />}
       </div>
     </div>
@@ -108,6 +126,196 @@ function ComingTab({ title, note }: { title: string; note: string }) {
     <div className="rounded-xl border border-dashed border-border bg-card px-6 py-12 text-center">
       <p className="text-sm font-medium text-foreground">{title}</p>
       <p className="mx-auto mt-1.5 max-w-md text-sm text-muted-foreground text-pretty">{note}</p>
+    </div>
+  )
+}
+
+const EMPTY_PLUGIN: AdminPlugin = {
+  id: '', slug: '', name: '', description: '', author: 'Aura Team', version: '1.0.0',
+  type: 'utility', scope: 'ide-component', icon: 'Puzzle', priceRub: 0, hidden: false,
+  docs: '', manifest: '{}', installs: 0,
+}
+
+function PluginHiddenAccess({ pluginId }: { pluginId: string }) {
+  const [grants, setGrants] = useState<PluginGrant[] | null>(null)
+  const [ident, setIdent] = useState('')
+  const [err, setErr] = useState('')
+  const load = async () => setGrants(await listPluginAccess(pluginId))
+  useEffect(() => {
+    void load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pluginId])
+  const add = async () => {
+    setErr('')
+    const res = await grantPluginAccess(pluginId, ident)
+    if (res.ok) {
+      setIdent('')
+      await load()
+    } else setErr(res.error ?? 'Ошибка')
+  }
+  return (
+    <div className="mt-2 rounded-lg border border-dashed border-border p-2.5">
+      <p className="mb-1.5 text-xs font-medium text-foreground">Доступ к скрытому плагину</p>
+      <div className="flex flex-wrap gap-1.5">
+        {grants?.map((g) => (
+          <span key={g.id} className="flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] text-foreground">
+            {g.label}
+            <button type="button" onClick={async () => { await revokePluginAccess(g.id); await load() }} className="text-muted-foreground hover:text-destructive"><X className="size-3" /></button>
+          </span>
+        ))}
+      </div>
+      <div className="mt-2 flex gap-2">
+        <input value={ident} onChange={(e) => setIdent(e.target.value)} placeholder="@логин или почта" className="h-8 flex-1 rounded-md border border-border bg-background px-2 text-xs outline-none" />
+        <button type="button" onClick={add} className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground">Дать доступ</button>
+      </div>
+      {err && <p className="mt-1 text-xs text-destructive">{err}</p>}
+    </div>
+  )
+}
+
+function PluginEditor({ plugin, onSaved, onCancel }: { plugin: AdminPlugin; onSaved: () => void; onCancel: () => void }) {
+  const [d, setD] = useState(plugin)
+  const [err, setErr] = useState('')
+  const [saving, setSaving] = useState(false)
+  const save = async () => {
+    setSaving(true)
+    setErr('')
+    const res = await upsertPlugin(d)
+    setSaving(false)
+    if (res.ok) onSaved()
+    else setErr(res.error ?? 'Ошибка')
+  }
+  return (
+    <div className="rounded-xl border border-border bg-card p-4">
+      <div className="grid gap-2 sm:grid-cols-2">
+        <input value={d.name} onChange={(e) => setD({ ...d, name: e.target.value })} placeholder="Название" className="h-9 rounded-md border border-border bg-background px-2 text-sm outline-none" />
+        <input value={d.slug} onChange={(e) => setD({ ...d, slug: e.target.value })} placeholder="slug" className="h-9 rounded-md border border-border bg-background px-2 font-mono text-sm outline-none" />
+        <input value={d.author} onChange={(e) => setD({ ...d, author: e.target.value })} placeholder="Автор(ы)" className="h-9 rounded-md border border-border bg-background px-2 text-sm outline-none" />
+        <input value={d.version} onChange={(e) => setD({ ...d, version: e.target.value })} placeholder="Версия" className="h-9 rounded-md border border-border bg-background px-2 text-sm outline-none" />
+        <select value={d.type} onChange={(e) => setD({ ...d, type: e.target.value })} className="h-9 rounded-md border border-border bg-background px-2 text-sm outline-none">
+          <option value="utility">Утилита</option>
+          <option value="skill">Навык ИИ</option>
+          <option value="system-mod">Системный мод</option>
+        </select>
+        <select value={d.scope} onChange={(e) => setD({ ...d, scope: e.target.value })} className="h-9 rounded-md border border-border bg-background px-2 text-sm outline-none">
+          <option value="ide-component">Интерфейс IDE</option>
+          <option value="ai-skill">Скилл/промпт ИИ</option>
+          <option value="system-ui">Системный UI</option>
+        </select>
+        <input value={d.icon} onChange={(e) => setD({ ...d, icon: e.target.value })} placeholder="Иконка (Puzzle)" className="h-9 rounded-md border border-border bg-background px-2 text-sm outline-none" />
+        <input type="number" value={d.priceRub} onChange={(e) => setD({ ...d, priceRub: Number(e.target.value) })} placeholder="Цена ₽ (0 = бесплатно)" className="h-9 rounded-md border border-border bg-background px-2 text-sm outline-none" />
+      </div>
+      <textarea value={d.description} onChange={(e) => setD({ ...d, description: e.target.value })} placeholder="Краткое описание" rows={2} className="mt-2 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none" />
+      <textarea value={d.docs} onChange={(e) => setD({ ...d, docs: e.target.value })} placeholder="Документация (Markdown)" rows={3} className="mt-2 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none" />
+      <textarea value={d.manifest} onChange={(e) => setD({ ...d, manifest: e.target.value })} placeholder='Манифест (JSON): { "rules": [...], "components": [...] }' rows={5} className="mt-2 w-full rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs outline-none" />
+      <label className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+        <input type="checkbox" checked={d.hidden} onChange={(e) => setD({ ...d, hidden: e.target.checked })} />
+        Скрытый плагин (доступен только выбранным пользователям)
+      </label>
+      {d.hidden && d.id && <PluginHiddenAccess pluginId={d.id} />}
+      {err && <p className="mt-2 text-sm text-destructive">{err}</p>}
+      <div className="mt-3 flex gap-2">
+        <button type="button" onClick={save} disabled={saving} className="rounded-md bg-foreground px-3 py-1.5 text-sm font-medium text-background disabled:opacity-60">{saving ? 'Сохранение…' : 'Сохранить'}</button>
+        <button type="button" onClick={onCancel} className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground">Отмена</button>
+      </div>
+    </div>
+  )
+}
+
+function PluginsTab() {
+  const [list, setList] = useState<AdminPlugin[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [editing, setEditing] = useState<AdminPlugin | null>(null)
+  const load = async () => {
+    setLoading(true)
+    setList(await listAllPlugins())
+    setLoading(false)
+  }
+  useEffect(() => {
+    void load()
+  }, [])
+  const onSaved = () => {
+    setEditing(null)
+    void load()
+  }
+
+  if (loading) return <div className="flex justify-center py-16"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
+  if (!list) return <p className="text-sm text-destructive">Нет доступа.</p>
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="rounded-lg border border-dashed border-border bg-muted/30 px-4 py-3 text-xs text-muted-foreground text-pretty">
+        <p className="font-medium text-foreground">Стандарт плагина</p>
+        Плагин описывается манифестом (JSON). Поддерживаемые поля: <code className="font-mono">rules</code> (правила/промпты для ИИ), <code className="font-mono">components</code> (компоненты интерфейса), <code className="font-mono">skills</code> (наборы навыков). Тип задаёт роль: «Навык ИИ» — промпты/оркестрация, «Интерфейс IDE» — UI-компоненты, «Системный мод» — системные изменения. Скрытые плагины видны только пользователям, которым выдан доступ.
+      </div>
+
+      {editing ? (
+        <PluginEditor plugin={editing} onSaved={onSaved} onCancel={() => setEditing(null)} />
+      ) : (
+        <button type="button" onClick={() => setEditing(EMPTY_PLUGIN)} className="self-start rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground">+ Новый плагин</button>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        {list.map((p) => (
+          <div key={p.id} className="rounded-xl border border-border bg-card p-4">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="font-semibold text-foreground">{p.name}</h3>
+                  {p.hidden && <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] text-amber-600 dark:text-amber-400">скрытый</span>}
+                </div>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {p.author} · v{p.version} · {p.priceRub === 0 ? 'бесплатно' : `${p.priceRub} ₽`} · установок: {p.installs}
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground line-clamp-2">{p.description}</p>
+              </div>
+              <div className="flex items-center gap-1">
+                <button type="button" onClick={() => setEditing(p)} className="rounded p-1.5 text-muted-foreground hover:text-foreground"><Pencil className="size-4" /></button>
+                <button type="button" onClick={async () => { await deletePlugin(p.id); await load() }} className="rounded p-1.5 text-muted-foreground hover:text-destructive"><Trash2 className="size-4" /></button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function AuditLog() {
+  const [rows, setRows] = useState<AuditRow[] | null>(null)
+  useEffect(() => {
+    void (async () => setRows(await getAuditLog()))()
+  }, [])
+  if (!rows) return null
+  return (
+    <div>
+      <h2 className="mb-2 text-sm font-semibold text-foreground">Журнал действий админов</h2>
+      {rows.length === 0 ? (
+        <p className="rounded-xl border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">Пока пусто.</p>
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-border">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 text-xs text-muted-foreground">
+              <tr>
+                <th className="px-3 py-2 text-left font-medium">Когда</th>
+                <th className="px-3 py-2 text-left font-medium">Админ</th>
+                <th className="px-3 py-2 text-left font-medium">Действие</th>
+                <th className="px-3 py-2 text-left font-medium">Объект</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {rows.map((r) => (
+                <tr key={r.id}>
+                  <td className="px-3 py-2 text-xs text-muted-foreground">{new Date(r.createdAt).toLocaleString('ru-RU')}</td>
+                  <td className="px-3 py-2 text-xs text-foreground">{r.actor}</td>
+                  <td className="px-3 py-2 font-mono text-xs text-foreground">{r.action}</td>
+                  <td className="px-3 py-2 font-mono text-[11px] text-muted-foreground">{r.targetId || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
