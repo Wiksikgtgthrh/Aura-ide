@@ -1191,6 +1191,19 @@ export function IdePanel({
           'term',
         )
         return
+      case 'docker':
+      case 'sudo':
+      case 'systemctl':
+      case 'apt':
+      case 'apt-get':
+        // Команды выполняются ВНУТРИ контейнера проекта (node:20-alpine) —
+        // docker-in-docker/sudo там не нужны и недоступны. Подсказываем.
+        appendEntry(
+          'warn',
+          `«${cmd}» не нужен здесь: команды выполняются внутри изолированного контейнера проекта (node + npm + git), а не в вашей системе. Для проверки окружения: node -v, npm -v, npm install, git status.`,
+          'term',
+        )
+        return
       case 'ls': {
         const paths = [...filesRef.current.keys()].sort()
         appendEntry('log', paths.length ? paths.join('\n') : '(no files)', 'term')
