@@ -44,11 +44,18 @@ function Button({
   className,
   variant = "default",
   size = "default",
+  nativeButton,
   ...props
 }: ButtonPrimitive.Props & VariantProps<typeof buttonVariants>) {
   return (
     <ButtonPrimitive
       data-slot="button"
+      // When `render` swaps the underlying element (e.g. <Button
+      // render={<Link/>}>), the rendered element is not a native <button>.
+      // Base UI defaults `nativeButton` to true and logs a console error on
+      // every mount / Activity reconnect otherwise. Default it from the
+      // presence of `render`; an explicit `nativeButton` prop still wins.
+      nativeButton={nativeButton ?? !props.render}
       className={cn(buttonVariants({ variant, size, className }))}
       {...props}
     />
