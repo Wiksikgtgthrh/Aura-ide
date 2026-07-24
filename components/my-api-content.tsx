@@ -18,6 +18,8 @@ import {
   FolderPlus,
   Check,
   X,
+  Stethoscope,
+  Loader2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -34,11 +36,13 @@ import {
   renameApiKeyGroup,
   deleteApiKeyGroup,
   importKeysWithModelProbe,
+  diagnoseApiKey,
   type ModelProbeImportResult,
   type ApiKeysGrouped,
   type ApiKeyGroup,
   type ApiKeyItem,
   type ApiKeyStatus,
+  type ApiKeyDiagnostics,
 } from '@/app/actions/api-keys'
 import { useLanguage } from '@/lib/language'
 
@@ -96,6 +100,8 @@ function KeyRow({
   const [modelId, setModelId] = useState(item.modelId)
   const [baseUrl, setBaseUrl] = useState(item.baseUrl)
   const [groupId, setGroupId] = useState(item.groupId ?? '')
+  const [diag, setDiag] = useState<ApiKeyDiagnostics | null>(null)
+  const [diagLoading, setDiagLoading] = useState(false)
 
   const handleCheck = async () => {
     setChecking(true)
@@ -104,6 +110,20 @@ function KeyRow({
       await refresh()
     } finally {
       setChecking(false)
+    }
+  }
+
+  const handleDiagnose = async () => {
+    if (diag) {
+      setDiag(null)
+      return
+    }
+    setDiagLoading(true)
+    try {
+      const res = await diagnoseApiKey(item.id)
+      setDiag(res)
+    } finally {
+      setDiagLoading(false)
     }
   }
 
@@ -164,6 +184,20 @@ function KeyRow({
             onClick={handleCheck}
           >
             <RefreshCw className={`size-4 ${checking ? 'animate-spin' : ''}`} />
+          </Button>
+          <Button
+            size="icon"
+            variant="ghost"
+            aria-label={t('diagnoseKey')}
+            disabled={diagLoading}
+            className={`hover:text-foreground ${diag ? 'text-foreground' : 'text-muted-foreground'}`}
+            onClick={handleDiagnose}
+          >
+            {diagLoading ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Stethoscope className="size-4" />
+            )}
           </Button>
           <Button
             size="icon"
@@ -239,6 +273,49 @@ function KeyRow({
               {t('cancel')}
             </Button>
           </div>
+        </div>
+      )}
+
+      {diag && (
+        <div className="mt-3 flex flex-col gap-2 border-t border-border pt-3 text-xs animate-in fade-in slide-in-from-top-1 duration-200">
+          {diag.checks.map((c) => (
+            <div key={c.name} className="flex items-start gap-2">
+              {c.ok ? (
+                <CheckCircle2 className="mt-px size-3.5 shrink-0 text-emerald-500" />
+              ) : (
+                <XCircle className="mt-px size-3.5 shrink-0 text-destructive" />
+              )}
+              <div className="min-w-0">
+                <span className="text-foreground">{c.name}</span>
+                <span
+                  className={`ml-1.5 font-mono font-medium ${
+                    c.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive'
+                  }`}
+                >
+                  {c.status ?? '—'}
+                </span>
+                {c.message && (
+                  <p className="text-muted-foreground break-words">{c.message}</p>
+                )}
+              </div>
+            </div>
+          ))}
+          <div className="mt-1 rounded-lg bg-muted/40 px-3 py-2 font-mono text-muted-foreground">
+            <p className="truncate">
+              {diag.baseUrl} · {diag.modelId}
+            </p>
+            <p>
+              Ключ: {diag.keyLength} символов · SHA-256: {diag.keyFingerprint}
+            </p>
+          </div>
+          <p className="text-muted-foreground/80 text-pretty">
+            Отпечаток позволяет сравнить этот ключ с ключом из другой IDE, не
+            раскрывая его. На своей машине выполните:{' '}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
+              node -e &quot;console.log(require(&apos;crypto&apos;).createHash(&apos;sha256&apos;).update(&apos;ВАШ_КЛЮЧ&apos;).digest(&apos;hex&apos;).slice(0,8))&quot;
+            </code>{' '}
+            — если отпечатки различаются, в Aura сохранён другой ключ.
+          </p>
         </div>
       )}
     </li>

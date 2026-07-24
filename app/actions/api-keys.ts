@@ -1,5 +1,6 @@
 'use server'
 
+import { createHash } from 'crypto'
 import { db } from '@/lib/db'
 import { apiKeys, apiKeyGroups } from '@/lib/db/schema'
 import { encryptSecret, decryptSecret, isEncrypted } from '@/lib/crypto'
@@ -656,6 +657,161 @@ export async function moveApiKeyToGroup(keyId: number, targetGroupId: string | n
   await db.update(apiKeys).set({ groupId: targetGroupId }).where(and(eq(apiKeys.id, keyId), eq(apiKeys.userId, userId)))
   revalidateTag('api-keys', 'max')
   revalidatePath('/settings')
+}
+
+// ---- Per-key diagnostics ----------------------------------------------------
+
+export type ApiKeyDiagCheck = {
+  name: string
+  status: number | null
+  ok: boolean
+  message: string | null
+}
+
+export type ApiKeyDiagnostics = {
+  baseUrl: string
+  modelId: string
+  keyLength: number
+  /** SHA-256 of the raw key, first 8 hex chars — compare with the key used in
+   *  another IDE without ever exposing the key itself. */
+  keyFingerprint: string
+  checks: ApiKeyDiagCheck[]
+}
+
+async function diagFetch(
+  name: string,
+  url: string,
+  init: RequestInit,
+): Promise<ApiKeyDiagCheck> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 12000)
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal })
+    let message: string | null = null
+    if (res.ok) {
+      // Status is enough — don't wait for (possibly streaming) bodies.
+      void res.body?.cancel().catch(() => {})
+    } else {
+      const text = await res.text().catch(() => '')
+      try {
+        const parsed = JSON.parse(text) as {
+          error?: { message?: string } | string
+          message?: string
+          detail?: string
+        }
+        message =
+          (typeof parsed.error === 'object'
+            ? parsed.error?.message
+            : typeof parsed.error === 'string'
+              ? parsed.error
+              : undefined) ??
+          parsed.message ??
+          parsed.detail ??
+          null
+      } catch {
+        // Non-JSON (e.g. an HTML page) — a strong hint the base URL points at
+        // a frontend, not an API.
+        message = text.trimStart().startsWith('<')
+          ? 'Ответ — HTML-страница, не API (проверьте Base URL)'
+          : text.slice(0, 140) || null
+      }
+    }
+    return {
+      name,
+      status: res.status,
+      ok: res.ok,
+      message: message ? message.slice(0, 140) : null,
+    }
+  } catch (err) {
+    return {
+      name,
+      status: null,
+      ok: false,
+      message:
+        err instanceof Error && err.name === 'AbortError'
+          ? 'Таймаут 12с'
+          : err instanceof Error
+            ? err.message.slice(0, 140)
+            : 'Сетевая ошибка',
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * Run the full request matrix for ONE key — exactly the requests the app
+ * makes (auth check, non-streaming completion, streaming completion) — and
+ * report per-request status plus the provider's own error text. Also returns
+ * the stored key's length and SHA-256 fingerprint so the user can verify the
+ * stored key is byte-identical to the one that works in another IDE.
+ */
+export async function diagnoseApiKey(id: number): Promise<ApiKeyDiagnostics | null> {
+  const userId = await getUserIdOrNull()
+  if (!userId) return null
+  const [row] = await db
+    .select({ key: apiKeys.key, baseUrl: apiKeys.baseUrl, modelId: apiKeys.modelId })
+    .from(apiKeys)
+    .where(and(eq(apiKeys.id, id), eq(apiKeys.userId, userId)))
+    .limit(1)
+  if (!row) return null
+
+  const rawKey = decryptSecret(row.key)
+  const modelId = row.modelId || DEFAULT_MODEL_ID
+  const base = normalizeBaseUrl(row.baseUrl)
+  const keyLength = rawKey.length
+  const keyFingerprint = createHash('sha256').update(rawKey).digest('hex').slice(0, 8)
+
+  let safe: string
+  try {
+    safe = await assertSafeFetchUrl(base)
+  } catch (err) {
+    return {
+      baseUrl: base,
+      modelId,
+      keyLength,
+      keyFingerprint,
+      checks: [
+        {
+          name: 'Проверка Base URL',
+          status: null,
+          ok: false,
+          message: err instanceof Error ? err.message : 'URL отклонён',
+        },
+      ],
+    }
+  }
+
+  const authHeaders = {
+    Authorization: `Bearer ${rawKey}`,
+    'Content-Type': 'application/json',
+  }
+  const completionBody = (stream: boolean) =>
+    JSON.stringify({
+      model: modelId,
+      messages: [{ role: 'user', content: 'ping' }],
+      max_tokens: 1,
+      stream,
+    })
+
+  const checks = await Promise.all([
+    diagFetch('GET /models — авторизация ключа', `${safe}/models`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${rawKey}` },
+    }),
+    diagFetch(
+      'POST /chat/completions — обычный запрос (как кнопка «Проверить»)',
+      `${safe}/chat/completions`,
+      { method: 'POST', headers: authHeaders, body: completionBody(false) },
+    ),
+    diagFetch(
+      'POST /chat/completions — стриминговый запрос (как чат)',
+      `${safe}/chat/completions`,
+      { method: 'POST', headers: authHeaders, body: completionBody(true) },
+    ),
+  ])
+
+  return { baseUrl: safe, modelId, keyLength, keyFingerprint, checks }
 }
 
 /** Update ping + status after a background check */
