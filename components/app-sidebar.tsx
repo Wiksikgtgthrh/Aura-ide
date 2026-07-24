@@ -57,6 +57,7 @@ import {
   Loader2,
   KeyRound,
   Gift,
+  Shield,
   Languages,
   Menu,
   X,
@@ -249,6 +250,7 @@ export function AppSidebar({
   userTag,
   isAnonymous,
   initialChats,
+  role = 'user',
 }: {
   userId: string
   userName: string
@@ -257,6 +259,8 @@ export function AppSidebar({
   userTag?: string
   isAnonymous?: boolean
   initialChats?: ChatListItem[]
+  /** Platform role — shows the «Админка» entry for admin/superadmin. */
+  role?: 'user' | 'admin' | 'superadmin'
 }) {
   const router = useRouter()
   const pathname = usePathname()
@@ -639,6 +643,23 @@ export function AppSidebar({
             </button>
           )
         })}
+
+        {/* Admin panel entry — only for admins / superadmins */}
+        {role !== 'user' && (
+          <button
+            type="button"
+            onMouseEnter={() => router.prefetch('/admin')}
+            onClick={() => navigateTo('/admin')}
+            className={`flex items-center gap-2.5 px-2 py-1.5 rounded-md text-sm transition-all duration-150 active:scale-[0.98] text-left w-full ${
+              activePath.startsWith('/admin')
+                ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
+                : 'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground'
+            }`}
+          >
+            <Shield className="size-4" />
+            {t('adminNav' as Parameters<typeof t>[0])}
+          </button>
+        )}
       </nav>
 
       {/* Chat sections */}

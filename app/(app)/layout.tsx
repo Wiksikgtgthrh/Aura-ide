@@ -10,6 +10,7 @@ import { getApiKeysForUser, getApiKeysGroupedForUser } from '@/app/actions/api-k
 import { getTeamsForUser } from '@/app/actions/teams'
 import { listChatsForUser } from '@/lib/chat-store'
 import { getSession } from '@/lib/session'
+import { getActor } from '@/lib/admin'
 import { NavigationProvider } from '@/lib/navigation-context'
 import { SettingsProvider } from '@/components/settings-context'
 import { AppContentArea, type PreloadedSettingsData, type PreloadedPagesData } from '@/components/app-content-area'
@@ -57,6 +58,10 @@ async function AppShellLoader({
 
   const displayName = profile.isAnonymous ? 'Anonymous' : (profile.name || sessionName)
 
+  // Platform role for the «Админка» sidebar entry (auto-heals superadmin).
+  const actor = await getActor()
+  const role = actor?.role ?? 'user'
+
   const settingsData: PreloadedSettingsData = {
     initial: prefs,
     initialMemories: memories,
@@ -84,6 +89,7 @@ async function AppShellLoader({
         userTag={profile.tag}
         isAnonymous={profile.isAnonymous}
         initialChats={initialChats}
+        role={role}
       />
       <AppContentArea
         settingsData={settingsData}

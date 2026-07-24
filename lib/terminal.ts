@@ -345,6 +345,49 @@ export function stopContainer(chatId: string): void {
   spawnSync('docker', ['rm', '-f', containerName(chatId)], { timeout: 20000 })
 }
 
+// ---- Admin: live container stats -------------------------------------------
+
+export type ContainerStat = {
+  name: string
+  chatId: string | null
+  cpuPerc: string
+  memUsage: string
+  memPerc: string
+}
+
+/** `docker stats --no-stream` for all aura-* containers (admin overview). */
+export function dockerContainerStats(): ContainerStat[] {
+  if (!dockerAvailable()) return []
+  try {
+    const res = spawnSync(
+      'docker',
+      [
+        'stats', '--no-stream', '--format',
+        '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}',
+      ],
+      { timeout: 12_000, encoding: 'utf8' },
+    )
+    if (res.status !== 0 || !res.stdout) return []
+    return res.stdout
+      .trim()
+      .split('\n')
+      .map((line) => line.split('\t'))
+      .filter((p) => p[0]?.startsWith('aura-term-'))
+      .map(([name, cpuPerc, memUsage, memPerc]) => {
+        const m = name.match(/^aura-term-([a-zA-Z0-9_-]+?)(?:-dev)?$/)
+        return {
+          name,
+          chatId: m?.[1] ?? null,
+          cpuPerc: cpuPerc ?? '0%',
+          memUsage: memUsage ?? '—',
+          memPerc: memPerc ?? '0%',
+        }
+      })
+  } catch {
+    return []
+  }
+}
+
 let sweeper: ReturnType<typeof setInterval> | null = null
 /** Фоновая метёлка: контейнеры/сессии, простаивающие >15 мин, гасятся. */
 export function ensureIdleSweeper(): void {

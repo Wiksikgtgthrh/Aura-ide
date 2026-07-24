@@ -23,8 +23,68 @@ export const user = pgTable('user', {
   isAnonymous: boolean('isAnonymous').default(false),
   bio: text('bio').notNull().default(''),
   tagChanged: boolean('tagChanged').notNull().default(false),
+  // Platform role: 'user' | 'admin' | 'superadmin'. Additive column — does NOT
+  // affect the better-auth login flow. Managed via the admin panel.
+  role: text('role').notNull().default('user'),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
   updatedAt: timestamp('updatedAt').notNull().defaultNow(),
+})
+
+// --- Admin / platform config ------------------------------------------------
+
+// Key/value platform settings (Docker RAM per user, project caps, …) editable
+// from the admin panel. One row per setting key.
+export const platformSettings = pgTable('platform_settings', {
+  key: text('key').primaryKey(),
+  value: jsonb('value').notNull().default({}),
+  updatedAt: timestamp('updatedAt').notNull().defaultNow(),
+})
+
+// Tariff plans (editable copy, price, features) — userBalance.plan → plans.key.
+export const plans = pgTable('plans', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  key: text('key').notNull().unique(), // 'free' | 'team' | 'special' | …
+  title: text('title').notNull().default(''),
+  priceRub: integer('priceRub').notNull().default(0),
+  features: jsonb('features').notNull().default([]),
+  copy: text('copy').notNull().default(''),
+  visible: boolean('visible').notNull().default(true),
+  position: integer('position').notNull().default(0),
+  updatedAt: timestamp('updatedAt').notNull().defaultNow(),
+})
+
+// Platform-owned API keys assigned to plans (Aura + custom models). Distinct
+// from users' personal apiKeys. Encrypted at rest (same crypto as apiKeys).
+export const platformApiKeys = pgTable('platform_api_keys', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  planKey: text('planKey').notNull(), // which plan grants this key
+  label: text('label').notNull().default(''),
+  key: text('key').notNull(),
+  baseUrl: text('baseUrl').notNull().default('https://api.openai.com/v1'),
+  modelId: text('modelId').notNull().default('gpt-4o-mini'),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+})
+
+// Access grants for HIDDEN plugins (visible only to selected users).
+export const pluginAccess = pgTable('plugin_access', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  pluginId: text('pluginId')
+    .notNull()
+    .references(() => plugins.id, { onDelete: 'cascade' }),
+  userId: text('userId')
+    .notNull()
+    .references(() => user.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+})
+
+// Audit log of admin actions (impersonation, password resets, plan edits, …).
+export const adminAudit = pgTable('admin_audit', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  actorId: text('actorId').notNull(),
+  action: text('action').notNull(),
+  targetId: text('targetId').notNull().default(''),
+  detail: jsonb('detail').notNull().default({}),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
 
 export const session = pgTable('session', {
