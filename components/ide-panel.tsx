@@ -526,15 +526,21 @@ function BottomPanel({
       }`}
       style={dock === 'bottom' ? { height: size } : { width: size }}
     >
-      {/* Resize handle */}
+      {/* Resize handle — wide hit area so it's easy to grab (was 1px). */}
       <div
         onPointerDown={startResize}
-        className={`absolute z-10 ${
+        className={`group/resize absolute z-20 flex items-center justify-center ${
           dock === 'bottom'
-            ? 'inset-x-0 top-0 h-1 cursor-row-resize'
-            : 'inset-y-0 left-0 w-1 cursor-col-resize'
-        } hover:bg-blue-500/40`}
-      />
+            ? 'inset-x-0 -top-1 h-2.5 cursor-row-resize'
+            : '-left-1 inset-y-0 w-2.5 cursor-col-resize'
+        }`}
+      >
+        <span
+          className={`rounded-full bg-zinc-600 transition-colors group-hover/resize:bg-blue-500 ${
+            dock === 'bottom' ? 'h-0.5 w-8' : 'h-8 w-0.5'
+          }`}
+        />
+      </div>
       {/* Tab bar */}
       <div className="flex h-9 shrink-0 items-center gap-1 border-b border-zinc-800 px-2">
         {(
@@ -615,6 +621,11 @@ function BottomPanel({
       {/* Scrollback */}
       <div
         ref={listRef}
+        onClick={() => {
+          // Click anywhere in the terminal focuses the input so Ctrl+V / typing
+          // lands there (paste was going nowhere when the input wasn't focused).
+          if (tab === 'terminal') inputRef.current?.focus()
+        }}
         className="flex-1 overflow-y-auto px-3 py-1.5 font-mono text-[11px] leading-relaxed"
       >
         {visible.length === 0 ? (
@@ -1937,20 +1948,41 @@ export function IdePanel({
                     </div>
                   )}
 
-                  {/* Preview iframe */}
+                  {/* Preview iframe — mobile mode renders inside a realistic
+                      phone frame (bezel, notch, home bar). */}
                   <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-background p-0">
-                    <iframe
-                      key={reloadKey}
-                      ref={iframeRef}
-                      title="IDE Preview"
-                      sandbox="allow-scripts"
-                      srcDoc={srcDoc}
-                      className={
-                        mobile
-                          ? 'my-3 h-[85%] w-[390px] max-w-full rounded-2xl border border-border shadow-lg'
-                          : 'h-full w-full border-0'
-                      }
-                    />
+                    {mobile ? (
+                      <div className="my-4 flex h-[92%] max-h-[780px] w-[380px] max-w-full shrink-0 flex-col rounded-[2.5rem] border-[10px] border-zinc-900 bg-zinc-900 shadow-2xl">
+                        {/* Notch */}
+                        <div className="relative flex h-6 shrink-0 items-center justify-center">
+                          <span className="absolute top-1 h-4 w-28 rounded-full bg-zinc-900" />
+                          <span className="absolute top-2 h-1.5 w-12 rounded-full bg-zinc-700" />
+                        </div>
+                        <div className="min-h-0 flex-1 overflow-hidden rounded-[1.6rem] bg-white">
+                          <iframe
+                            key={reloadKey}
+                            ref={iframeRef}
+                            title="IDE Preview"
+                            sandbox="allow-scripts"
+                            srcDoc={srcDoc}
+                            className="h-full w-full border-0"
+                          />
+                        </div>
+                        {/* Home indicator */}
+                        <div className="flex h-4 shrink-0 items-center justify-center">
+                          <span className="h-1 w-24 rounded-full bg-zinc-600" />
+                        </div>
+                      </div>
+                    ) : (
+                      <iframe
+                        key={reloadKey}
+                        ref={iframeRef}
+                        title="IDE Preview"
+                        sandbox="allow-scripts"
+                        srcDoc={srcDoc}
+                        className="h-full w-full border-0"
+                      />
+                    )}
                   </div>
                 </div>
 

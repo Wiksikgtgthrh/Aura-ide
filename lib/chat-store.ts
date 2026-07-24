@@ -93,19 +93,37 @@ export async function saveChatMessages(
   chatId: string,
   uiMessages: UIMessage[],
 ): Promise<void> {
-  // Replace all messages for the chat (simple + always consistent).
-  await db.delete(messages).where(eq(messages.chatId, chatId))
-  if (uiMessages.length > 0) {
-    await db.insert(messages).values(
-      uiMessages.map((m, i) => ({
-        id: m.id || generateId(),
-        chatId,
-        role: m.role,
-        parts: m.parts,
-        createdAt: new Date(Date.now() + i),
-      })),
-    )
+  // NON-DESTRUCTIVE save: upsert every message by id, THEN delete only the
+  // ones no longer present. Previously this did delete-all → insert-all, so a
+  // failed insert (e.g. an oversized/frozen part) left the chat EMPTY. Now a
+  // failed upsert throws before any delete, and history is never lost.
+  const rows = uiMessages.map((m, i) => ({
+    id: m.id || generateId(),
+    chatId,
+    role: m.role,
+    parts: m.parts,
+    createdAt: new Date(Date.now() + i),
+  }))
+
+  if (rows.length > 0) {
+    await db
+      .insert(messages)
+      .values(rows)
+      .onConflictDoUpdate({
+        target: messages.id,
+        set: {
+          parts: sql`excluded."parts"`,
+          role: sql`excluded."role"`,
+        },
+      })
+    const keepIds = rows.map((r) => r.id)
+    await db
+      .delete(messages)
+      .where(and(eq(messages.chatId, chatId), notInArray(messages.id, keepIds)))
+  } else {
+    await db.delete(messages).where(eq(messages.chatId, chatId))
   }
+
   await db
     .update(chats)
     .set({ updatedAt: new Date() })

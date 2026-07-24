@@ -808,19 +808,36 @@ Do NOT emit this block when you did not emit files.`
           return undefined
         },
         onEnd: ({ messages: savedMessages }) => {
-          // Persist the token count inside the message parts (the metadata
-          // itself is not stored) so the summary survives a reload.
-          const last = savedMessages[savedMessages.length - 1]
-          if (last?.role === 'assistant' && usageHolder.totalTokens) {
-            const parts = last.parts as unknown as Array<Record<string, unknown>>
-            if (!parts.some((p) => p.type === 'data-usage')) {
-              parts.push({
-                type: 'data-usage',
-                data: { totalTokens: usageHolder.totalTokens },
-              })
+          // Persist the token count as a data-usage part so the reply summary
+          // survives a reload. CRITICAL: build a NEW array — AI SDK freezes
+          // message parts, so a `.push()` here throws and (for a brand-new
+          // chat) aborts onEnd BEFORE saveChatMessages → messages never
+          // persisted → chat opens EMPTY. Never mutate savedMessages.
+          const lastIdx = savedMessages.length - 1
+          const messagesToSave = savedMessages.map((m, idx) => {
+            if (
+              idx === lastIdx &&
+              m.role === 'assistant' &&
+              usageHolder.totalTokens &&
+              !(m.parts ?? []).some(
+                (p) => (p as { type: string }).type === 'data-usage',
+              )
+            ) {
+              return {
+                ...m,
+                parts: [
+                  ...(m.parts ?? []),
+                  { type: 'data-usage', data: { totalTokens: usageHolder.totalTokens } },
+                ],
+              } as (typeof savedMessages)[number]
             }
-          }
-          void saveChatMessages(id, savedMessages)
+            return m
+          })
+          // Never let a persistence failure go unhandled (it silently wiped
+          // history before). Log it instead.
+          void saveChatMessages(id, messagesToSave).catch((err) =>
+            console.error('[chat] saveChatMessages failed:', err),
+          )
           // Keep the persistent virtual FS in sync with what the model just
           // generated — even if the user closes the tab mid-stream. When the
           // reply changed files, snapshot a version checkpoint (history/rollback).
