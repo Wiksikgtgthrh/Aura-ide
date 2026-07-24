@@ -39,6 +39,114 @@ const AURA_MODEL_MAP: Record<string, string> = {
   'aura-max-fast': 'anthropic/claude-haiku-4.5',
 }
 
+// ---- Provider error → human-readable chat message --------------------------
+
+/**
+ * Pull statusCode / provider message / retry-after out of an AI SDK error.
+ * Works for both AI_APICallError and AI_RetryError (which wraps the
+ * per-attempt errors in .errors/.lastError) without importing error classes.
+ */
+function extractApiError(err: unknown): {
+  statusCode?: number
+  providerMessage?: string
+  retryAfterSec?: number
+} {
+  const wrapper = err as {
+    lastError?: unknown
+    errors?: unknown[]
+  }
+  const candidate = (wrapper?.lastError ??
+    (Array.isArray(wrapper?.errors)
+      ? wrapper.errors[wrapper.errors.length - 1]
+      : undefined) ??
+    err) as {
+    statusCode?: number
+    responseBody?: string
+    responseHeaders?: Record<string, string>
+    message?: string
+  }
+
+  const statusCode =
+    typeof candidate?.statusCode === 'number' ? candidate.statusCode : undefined
+
+  // Provider JSON body: {"error":{"message":"...","type":"...","code":"..."}}
+  let providerMessage: string | undefined
+  if (typeof candidate?.responseBody === 'string') {
+    try {
+      const parsed = JSON.parse(candidate.responseBody) as {
+        error?: { message?: string } | string
+        message?: string
+      }
+      providerMessage =
+        typeof parsed.error === 'object' && parsed.error?.message
+          ? parsed.error.message
+          : typeof parsed.error === 'string'
+            ? parsed.error
+            : parsed.message
+    } catch {
+      /* not JSON */
+    }
+  }
+  if (!providerMessage && typeof candidate?.message === 'string') {
+    providerMessage = candidate.message
+  }
+  providerMessage = providerMessage?.slice(0, 300)
+
+  const retryAfterRaw =
+    candidate?.responseHeaders?.['retry-after'] ??
+    candidate?.responseHeaders?.['Retry-After']
+  const retryAfterSec = retryAfterRaw
+    ? Number.parseInt(retryAfterRaw, 10)
+    : undefined
+
+  return {
+    statusCode,
+    providerMessage,
+    retryAfterSec: Number.isFinite(retryAfterSec) ? retryAfterSec : undefined,
+  }
+}
+
+function formatWait(seconds: number): string {
+  if (seconds < 90) return `${seconds} сек`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 90) return `${minutes} мин`
+  return `${Math.round(minutes / 60)} ч`
+}
+
+/**
+ * Map a model/provider error to a short, actionable message in the user's
+ * language. This string is what the chat UI shows instead of a raw
+ * AI_RetryError dump.
+ */
+function friendlyModelError(err: unknown, modelName: string): string {
+  const { statusCode, providerMessage, retryAfterSec } = extractApiError(err)
+  const provider = providerMessage ? ` Ответ провайдера: «${providerMessage}»` : ''
+
+  if (statusCode === 429) {
+    const wait =
+      retryAfterSec && retryAfterSec > 0
+        ? ` Провайдер просит подождать ~${formatWait(retryAfterSec)}.`
+        : ''
+    return `Провайдер модели «${modelName}» перегружен или лимит запросов исчерпан (429).${provider}.${wait} Попробуйте позже, выберите другую модель или другой API-ключ в селекторе модели.`
+  }
+  if (statusCode === 401 || statusCode === 403) {
+    return `Провайдер отклонил API-ключ (${statusCode}).${provider}. Проверьте ключ и Base URL на странице «Мои API».`
+  }
+  if (statusCode === 402) {
+    return `У провайдера закончился баланс (402).${provider}. Пополните счёт или используйте другой ключ.`
+  }
+  if (statusCode === 404) {
+    return `Модель «${modelName}» не найдена у провайдера (404).${provider}. Проверьте ID модели на странице «Мои API».`
+  }
+  if (statusCode && statusCode >= 500) {
+    return `Провайдер модели «${modelName}» временно недоступен (${statusCode}).${provider}. Повторите попытку позже.`
+  }
+  if (providerMessage) {
+    return `Ошибка провайдера модели «${modelName}»: ${providerMessage}`
+  }
+  return 'Не удалось получить ответ от модели. Повторите попытку.'
+}
+
 export async function POST(req: Request) {
   const session = await getSession()
   if (!session?.user) {
@@ -483,6 +591,10 @@ on those contents, never on older versions from this conversation.`
   try {
     const result = streamText({
       model,
+      // One retry only. The SDK default (2 retries with backoff) blindly
+      // re-sent requests even on a 429 whose retry-after was ~5 HOURS —
+      // the user just stared at a spinner for ~10s before the same error.
+      maxRetries: 1,
       instructions: finalInstructions,
       messages: await convertToModelMessages(windowedMessages),
       onFinish: ({ usage }) => {
@@ -509,6 +621,10 @@ on those contents, never on older versions from this conversation.`
       stream: toUIMessageStream({
         stream: result.stream,
         originalMessages: allMessages,
+        // Errors thrown mid-stream (the route already returned 200 by then)
+        // become an error part in the UI stream. Without this mapper the
+        // client showed a raw technical dump / generic text.
+        onError: (error: unknown) => friendlyModelError(error, usedModelName),
         onEnd: ({ messages: savedMessages }) => {
           void saveChatMessages(id, savedMessages)
           // Keep the persistent virtual FS in sync with what the model just
@@ -553,6 +669,9 @@ on those contents, never on older versions from this conversation.`
               try {
                 const { text } = await generateText({
                   model,
+                  // Best-effort side task — never burn retries on it (a
+                  // rate-limited provider would otherwise be hit 3 more times).
+                  maxRetries: 0,
                   prompt: `Придумай короткое название проекта (2–4 слова, без кавычек, без точки в конце) по запросу пользователя: "${firstUserText}". Ответь ТОЛЬКО названием, на языке запроса.`,
                 })
                 const title = text.trim().replace(/^["'«]+|["'»]+$/g, '').slice(0, 60)

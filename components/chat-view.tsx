@@ -341,10 +341,12 @@ export function ChatView({
     if (hasContent && !panelVisible) setPanelVisible(true)
   }, [hasContent, panelVisible])
 
-  // Auto-fallback: if Gateway billing error and user has their own keys, switch to first key
+  // Auto-fallback: if Gateway billing error and user has their own keys, switch to first key.
+  // NOTE: no bare '402' check — a provider-side 402 on the user's OWN key also
+  // mentions «402» and must NOT trigger the gateway fallback.
   const isGatewayBillingError =
     error &&
-    (error.message?.includes('402') ||
+    (error.message?.includes('customer_verification_required') ||
       error.message?.includes('credit card') ||
       error.message?.includes('gateway_billing'))
   const firstApiKeyId = apiKeysList?.[0]?.id
@@ -471,21 +473,31 @@ export function ChatView({
               <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive" role="alert">
                 {(() => {
                   const msg = error?.message ?? ''
-                  if (msg.includes('rate_limit') || msg.includes('429')) {
+                  // Structured JSON error from a pre-stream response
+                  // (daily built-in limit, read-only access, gateway billing).
+                  let parsed: { error?: string; message?: string } | null = null
+                  try {
+                    parsed = JSON.parse(msg) as { error?: string; message?: string }
+                  } catch {
+                    /* not JSON */
+                  }
+                  if (parsed?.error === 'rate_limit') {
                     return (
                       <span>
-                        {t('rateLimited')}{' '}
+                        {parsed.message ?? t('rateLimited')}{' '}
                         <a href="/my-api" className="underline font-medium">
                           {t('rateLimitedCta')}
                         </a>
                       </span>
                     )
                   }
+                  if (parsed?.message) {
+                    return <span>{parsed.message}</span>
+                  }
                   if (
                     msg.includes('gateway_billing') ||
                     msg.includes('credit card') ||
-                    msg.includes('customer_verification_required') ||
-                    msg.includes('402')
+                    msg.includes('customer_verification_required')
                   ) {
                     return (
                       <span>
@@ -494,6 +506,22 @@ export function ChatView({
                           Добавьте свой API-ключ
                         </a>{' '}
                         и выберите его в селекторе модели.
+                      </span>
+                    )
+                  }
+                  // Friendly server-generated stream error (Russian text from
+                  // the route's onError mapper, e.g. provider 429/401/5xx) —
+                  // show it verbatim instead of a generic message.
+                  if (/[а-яё]/i.test(msg)) {
+                    return <span>{msg}</span>
+                  }
+                  if (msg.includes('rate_limit') || msg.includes('429')) {
+                    return (
+                      <span>
+                        {t('rateLimited')}{' '}
+                        <a href="/my-api" className="underline font-medium">
+                          {t('rateLimitedCta')}
+                        </a>
                       </span>
                     )
                   }

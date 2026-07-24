@@ -29,6 +29,30 @@ export function HomeContent() {
     if (pathname === '/') setCreating(false)
   }, [pathname])
 
+  // Warm up everything the /chat/[id] project view needs BEFORE the user
+  // submits a prompt, so entering chat+preview mode is fast:
+  //  1. router.prefetch — compiles the route and downloads its client chunks
+  //     (with cacheComponents only the static shell renders; the dynamic
+  //     ChatLoader inside Suspense is deferred until real navigation).
+  //  2. import('ide-panel') — pulls the heaviest client chunk (file tree,
+  //     editors) that otherwise starts downloading only after hydration.
+  //  3. Monaco loader.init() — starts the CDN download of the editor core.
+  useEffect(() => {
+    const t1 = window.setTimeout(() => {
+      router.prefetch('/chat/warmup')
+      void import('@/components/ide-panel').catch(() => {})
+    }, 400)
+    const t2 = window.setTimeout(() => {
+      void import('@monaco-editor/react')
+        .then((m) => m.loader.init())
+        .catch(() => {})
+    }, 1200)
+    return () => {
+      window.clearTimeout(t1)
+      window.clearTimeout(t2)
+    }
+  }, [router])
+
   const startChat = (text: string, modelId: string) => {
     const id = generateId()
     sessionStorage.setItem(

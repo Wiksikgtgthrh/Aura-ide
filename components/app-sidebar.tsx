@@ -175,8 +175,8 @@ function SettingsSidebarContent({
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="px-3 pt-3">
+      {/* Header — pr-12 on mobile keeps clear of the absolute close (X) button */}
+      <div className="pl-3 pr-12 pt-3 md:pr-3">
         <div className="flex items-center gap-2 px-2 py-1.5">
           <span className="size-5 rounded-full bg-foreground flex items-center justify-center shrink-0">
             <span className="text-background text-[10px] font-semibold">A</span>
@@ -397,12 +397,13 @@ export function AppSidebar({
           mobileOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-      {/* Mobile close */}
+      {/* Mobile close — z-10 + solid bg so it never visually merges with the
+          header icons below; the headers also reserve pr-12 for it on mobile. */}
       <button
         type="button"
         onClick={() => setMobileOpen(false)}
         aria-label={t('closeMenu')}
-        className="md:hidden absolute top-3 right-3 size-8 flex items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground transition-colors duration-200"
+        className="md:hidden absolute top-3 right-3 z-10 size-8 flex items-center justify-center rounded-md bg-sidebar text-muted-foreground hover:bg-sidebar-accent hover:text-foreground transition-colors duration-200"
       >
         <X className="size-4" />
       </button>
@@ -425,8 +426,9 @@ export function AppSidebar({
       <div className={`flex flex-col flex-1 min-h-0 ${isSettings ? 'hidden' : ''}`}>
       <Activity mode={isSettings ? 'hidden' : 'visible'}>
 
-      {/* Account switcher */}
-      <div className="px-3 pt-3">
+      {/* Account switcher — pr-12 on mobile reserves space for the absolute
+          close (X) button so the trigger's chevron never sits underneath it */}
+      <div className="pl-3 pr-12 pt-3 md:pr-3">
         <DropdownMenu>
           <DropdownMenuTrigger
             onClick={loadSessions}

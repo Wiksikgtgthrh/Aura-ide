@@ -289,6 +289,8 @@ function GroupBlock({
       startTransition(async () => {
         const { renameApiKeyGroup } = await import('@/app/actions/api-keys')
         await renameApiKeyGroup(group.id, name.trim())
+        void globalMutate('api-keys')
+        void globalMutate('api-keys-grouped')
       })
     }
   }
@@ -405,6 +407,14 @@ function AddKeyForm({
         onAdd({ ...item, groupId: form.groupId || null }, form.groupId || null)
         setForm({ name: '', key: '', baseUrl: 'https://api.openai.com/v1', modelId: 'gpt-4o-mini', groupId: '' })
         setOpen(false)
+        // Creation no longer blocks on verification — kick off a background
+        // check so the status badge fills in shortly after the row appears.
+        void (async () => {
+          const { checkApiKey } = await import('@/app/actions/api-keys')
+          await checkApiKey(item.id)
+          void globalMutate('api-keys')
+          void globalMutate('api-keys-grouped')
+        })()
       }
     } finally {
       setSaving(false)
@@ -471,19 +481,37 @@ export function ApiKeysForm({ initialData }: { initialData?: ApiKeysGrouped | nu
   const { data: swrData, isLoading } = useSWR<ApiKeysGrouped | null>(
     'api-keys-grouped',
     () => getApiKeysGrouped(),
-    { fallbackData: initialData ?? null, revalidateOnFocus: false },
+    // NOTE: no `fallbackData: null` — an explicit null used to count as
+    // "data present", which closed the one-shot sync latch below with an
+    // EMPTY list before the real fetch resolved.
+    initialData
+      ? { fallbackData: initialData, revalidateOnFocus: false }
+      : { revalidateOnFocus: false },
   )
   const resolved = swrData ?? initialData ?? null
   const [groups, setGroups] = useState<ApiKeyGroup[]>(resolved?.groups ?? [])
   const [ungrouped, setUngrouped] = useState<ApiKeyItem[]>(resolved?.ungrouped ?? [])
 
-  // Sync state when SWR data arrives (first load)
-  const [synced, setSynced] = useState(!!initialData)
-  if (!synced && swrData !== undefined) {
-    setSynced(true)
+  // Re-sync local state EVERY time fresh SWR data arrives — revalidation
+  // after our own mutations, cross-page mutations from /my-api (shared
+  // 'api-keys-grouped' cache key), or an Activity show/hide cycle. The old
+  // one-shot `synced` latch synced exactly once, so keys added on /my-api
+  // never showed up here until a full page reload.
+  const [lastSynced, setLastSynced] = useState<ApiKeysGrouped | null | undefined>(
+    initialData ?? undefined,
+  )
+  if (swrData !== undefined && swrData !== lastSynced) {
+    setLastSynced(swrData)
     setGroups(swrData?.groups ?? [])
     setUngrouped(swrData?.ungrouped ?? [])
   }
+
+  // Revalidate both shared caches (grouped: this form + /my-api; flat:
+  // model switcher, prompt box) after any mutation made from this form.
+  const syncCaches = useCallback(() => {
+    void globalMutate('api-keys')
+    void globalMutate('api-keys-grouped')
+  }, [])
 
   // All hooks must be declared before any conditional returns
   const [checkingId, setCheckingId] = useState<number | null>(null)
@@ -518,12 +546,12 @@ export function ApiKeysForm({ initialData }: { initialData?: ApiKeysGrouped | nu
             : k
         setUngrouped((prev) => prev.map(update))
         setGroups((prev) => prev.map((g) => ({ ...g, keys: g.keys.map(update) })))
-        globalMutate('api-keys')
+        syncCaches()
       }
     } finally {
       setCheckingId(null)
     }
-  }, [])
+  }, [syncCaches])
 
   if (isLoading && !initialData) {
     return (
@@ -593,6 +621,7 @@ export function ApiKeysForm({ initialData }: { initialData?: ApiKeysGrouped | nu
       }
       startTransition(async () => {
         await moveApiKeyToGroup(keyId, targetGroup)
+        syncCaches()
       })
     }
   }
@@ -610,6 +639,7 @@ export function ApiKeysForm({ initialData }: { initialData?: ApiKeysGrouped | nu
     startTransition(async () => {
       const g = await createApiKeyGroup(name)
       if (g) setGroups((prev) => [...prev, g])
+      syncCaches()
     })
   }
 
@@ -629,6 +659,7 @@ export function ApiKeysForm({ initialData }: { initialData?: ApiKeysGrouped | nu
     setGroups((prev) => prev.filter((g) => g.id !== id))
     startTransition(async () => {
       await deleteApiKeyGroup(id)
+      syncCaches()
     })
   }
 
@@ -637,7 +668,7 @@ export function ApiKeysForm({ initialData }: { initialData?: ApiKeysGrouped | nu
     setGroups((prev) => prev.map((g) => ({ ...g, keys: g.keys.filter((k) => k.id !== id) })))
     startTransition(async () => {
       await deleteApiKey(id)
-      globalMutate('api-keys')
+      syncCaches()
     })
   }
 
@@ -652,6 +683,7 @@ export function ApiKeysForm({ initialData }: { initialData?: ApiKeysGrouped | nu
         setUngrouped((prev) => prev.map(update))
         setGroups((prev) => prev.map((g) => ({ ...g, keys: g.keys.map(update) })))
       }
+      syncCaches()
     } finally {
       setCheckingAll(false)
     }
@@ -691,7 +723,7 @@ export function ApiKeysForm({ initialData }: { initialData?: ApiKeysGrouped | nu
           } else {
             setUngrouped((prev) => [...prev, key])
           }
-          globalMutate('api-keys')
+          syncCaches()
         }} />
         <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs" onClick={handleAddGroup}>
           <FolderPlus className="size-3.5" />

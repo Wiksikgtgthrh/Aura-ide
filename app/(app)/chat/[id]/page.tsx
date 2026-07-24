@@ -16,11 +16,15 @@ async function resolveAccessWithRetry(
   id: string,
   userId: string,
 ): Promise<ChatAccess | null> {
-  const attempts = 8
-  for (let i = 0; i < attempts; i++) {
+  // Short first delays: the common race (client navigated ~100-300ms before
+  // createChat committed) resolves on the 1st-2nd retry, so a brand-new chat
+  // opens ~100ms sooner than with a flat 200ms interval. Later delays grow so
+  // the total budget (~1.9s) still covers a slow DB commit.
+  const delays = [100, 150, 200, 250, 300, 400, 500]
+  for (let i = 0; i <= delays.length; i++) {
     const access = await getChatAccess(id, userId)
     if (access) return access
-    if (i < attempts - 1) await new Promise((r) => setTimeout(r, 200))
+    if (i < delays.length) await new Promise((r) => setTimeout(r, delays[i]))
   }
   return null
 }

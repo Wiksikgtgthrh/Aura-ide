@@ -224,6 +224,7 @@ export async function importKeysWithModelProbe(input: {
 
   revalidateTag('api-keys', 'max')
   revalidatePath('/settings')
+  revalidatePath('/my-api')
   return { created, failed, perKey }
 }
 
@@ -322,8 +323,10 @@ export async function createApiKey(input: {
   const modelId = (input.modelId?.trim() || DEFAULT_MODEL_ID).slice(0, 200)
   const baseUrl = normalizeBaseUrl(input.baseUrl).slice(0, 300)
 
-  const status = await verifyKey(trimmedKey, baseUrl)
-
+  // Insert immediately with status 'unknown' — the key appears in the UI
+  // right away. Verification used to run inline here (up to 12s before the
+  // row even existed); the client now fires checkApiKey() in the background
+  // once the row is visible.
   const [row] = await db
     .insert(apiKeys)
     .values({
@@ -332,8 +335,8 @@ export async function createApiKey(input: {
       key: encryptSecret(trimmedKey),
       modelId,
       baseUrl,
-      status,
-      lastCheckedAt: new Date(),
+      status: 'unknown',
+      lastCheckedAt: null,
     })
     .returning({
       id: apiKeys.id,
@@ -344,6 +347,10 @@ export async function createApiKey(input: {
       status: apiKeys.status,
       lastCheckedAt: apiKeys.lastCheckedAt,
     })
+  // Invalidate the 60s unstable_cache — without this getApiKeys() kept
+  // serving a stale list and a just-added key "didn't show up".
+  revalidateTag('api-keys', 'max')
+  revalidatePath('/settings')
   return toItem(row)
 }
 
@@ -372,6 +379,7 @@ export async function updateApiKey(
       status: apiKeys.status,
       lastCheckedAt: apiKeys.lastCheckedAt,
     })
+  revalidateTag('api-keys', 'max')
   return row ? toItem(row) : null
 }
 
@@ -390,6 +398,7 @@ export async function checkApiKey(id: number): Promise<ApiKeyStatus | null> {
     .update(apiKeys)
     .set({ status, lastCheckedAt: new Date() })
     .where(and(eq(apiKeys.id, id), eq(apiKeys.userId, userId)))
+  revalidateTag('api-keys', 'max')
   return status
 }
 
@@ -412,6 +421,7 @@ export async function checkAllApiKeys(): Promise<ApiKeyItem[] | null> {
     }),
   )
 
+  revalidateTag('api-keys', 'max')
   return getApiKeys()
 }
 
@@ -498,6 +508,7 @@ export async function createApiKeysBulk(
     }),
   )
 
+  revalidateTag('api-keys', 'max')
   return { created, failed }
 }
 
@@ -516,7 +527,13 @@ export async function deleteApiKey(id: number): Promise<void> {
 export async function getApiKeysGrouped(): Promise<ApiKeysGrouped | null> {
   const userId = await getUserIdOrNull()
   if (!userId) return null
+  return getApiKeysGroupedForUser(userId)
+}
 
+/** Direct version — use when userId is already known (e.g. in layout). */
+export async function getApiKeysGroupedForUser(
+  userId: string,
+): Promise<ApiKeysGrouped> {
   const [groups, keys] = await Promise.all([
     db.select().from(apiKeyGroups).where(eq(apiKeyGroups.userId, userId)).orderBy(asc(apiKeyGroups.position)),
     db.select().from(apiKeys).where(eq(apiKeys.userId, userId)).orderBy(asc(apiKeys.position), desc(apiKeys.createdAt)),
@@ -552,6 +569,7 @@ export async function createApiKeyGroup(name: string): Promise<ApiKeyGroup | nul
     .insert(apiKeyGroups)
     .values({ id, userId, name: name.trim(), position: existing.length })
     .returning()
+  revalidateTag('api-keys', 'max')
   revalidatePath('/settings')
   return { id: row.id, name: row.name, position: row.position, keys: [] }
 }
@@ -560,6 +578,7 @@ export async function renameApiKeyGroup(id: string, name: string): Promise<void>
   const userId = await getUserIdOrNull()
   if (!userId) return
   await db.update(apiKeyGroups).set({ name: name.trim() }).where(and(eq(apiKeyGroups.id, id), eq(apiKeyGroups.userId, userId)))
+  revalidateTag('api-keys', 'max')
   revalidatePath('/settings')
 }
 
@@ -569,6 +588,7 @@ export async function deleteApiKeyGroup(id: string): Promise<void> {
   // Ungroup all keys in this group
   await db.update(apiKeys).set({ groupId: null }).where(and(eq(apiKeys.groupId, id), eq(apiKeys.userId, userId)))
   await db.delete(apiKeyGroups).where(and(eq(apiKeyGroups.id, id), eq(apiKeyGroups.userId, userId)))
+  revalidateTag('api-keys', 'max')
   revalidatePath('/settings')
 }
 
@@ -576,6 +596,7 @@ export async function moveApiKeyToGroup(keyId: number, targetGroupId: string | n
   const userId = await getUserIdOrNull()
   if (!userId) return
   await db.update(apiKeys).set({ groupId: targetGroupId }).where(and(eq(apiKeys.id, keyId), eq(apiKeys.userId, userId)))
+  revalidateTag('api-keys', 'max')
   revalidatePath('/settings')
 }
 
@@ -592,4 +613,5 @@ export async function updateApiKeyPing(
     .update(apiKeys)
     .set({ status, ping, failReason, lastCheckedAt: new Date() })
     .where(and(eq(apiKeys.id, id), eq(apiKeys.userId, userId)))
+  revalidateTag('api-keys', 'max')
 }

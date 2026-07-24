@@ -8,11 +8,12 @@ import { HomeContent } from '@/components/home-content'
 import { ProjectsContent } from '@/components/projects-content'
 import { TeamsContent } from '@/components/team-management/teams-content'
 import { PluginsContent } from '@/components/plugins/plugins-content'
+import { MyApiContent } from '@/components/my-api-content'
 import type { Preferences } from '@/app/actions/preferences'
 import type { Memory } from '@/app/actions/memories'
 import type { MarketplacePlugin, InstalledPlugin } from '@/app/actions/plugins'
 import type { Profile } from '@/app/actions/profile'
-import type { ApiKeyItem } from '@/app/actions/api-keys'
+import type { ApiKeyItem, ApiKeysGrouped } from '@/app/actions/api-keys'
 import type { ProjectItem } from '@/app/actions/projects'
 import type { TeamItem } from '@/app/actions/teams'
 import type { ChatListItem } from '@/lib/chat-store'
@@ -30,15 +31,16 @@ export type PreloadedPagesData = {
   initialMarketplacePlugins: MarketplacePlugin[]
   initialChats: ChatListItem[]
   initialApiKeys: ApiKeyItem[]
+  initialApiKeysGrouped: ApiKeysGrouped
   initialInstalledPlugins: InstalledPlugin[]
 }
 
 /**
  * Client wrapper for the main content area.
  *
- * All main pages (home, projects, teams, plugins, settings) are mounted
- * once in Activity shells. Navigating between them is a pure client-side
- * visibility toggle — zero RSC round-trips, zero network latency.
+ * All main pages (home, projects, teams, plugins, my-api, settings) are
+ * mounted once in Activity shells. Navigating between them is a pure
+ * client-side visibility toggle — zero RSC round-trips, zero network latency.
  *
  * The RSC page files for these routes return null (content is here).
  * Dynamic routes (/chat/[id], /teams/[id], /plugins/[slug]) still use
@@ -53,6 +55,7 @@ const EMPTY_PAGES_DATA: PreloadedPagesData = {
   initialMarketplacePlugins: [],
   initialChats: [],
   initialApiKeys: [],
+  initialApiKeysGrouped: { groups: [], ungrouped: [] },
   initialInstalledPlugins: [],
 }
 
@@ -73,9 +76,11 @@ export function AppContentArea({
   const isProjects = pathname === '/projects'
   const isTeams = pathname === '/teams'
   const isPlugins = pathname === '/plugins'
+  const isMyApi = pathname === '/my-api'
   const isSettings = pathname.startsWith('/settings')
   // Dynamic routes: /chat/[id], /teams/[teamId], /plugins/[slug], etc.
-  const isDynamic = !isHome && !isProjects && !isTeams && !isPlugins && !isSettings
+  const isDynamic =
+    !isHome && !isProjects && !isTeams && !isPlugins && !isMyApi && !isSettings
 
   return (
     <SWRConfig value={{ fallback: swrFallback }}>
@@ -118,6 +123,16 @@ export function AppContentArea({
         </Activity>
       </div>
 
+      {/* My API — same instant Activity pattern as /settings. The grouped
+          keys are pre-loaded in the layout, so the page opens with data. */}
+      <div className={`flex-1 min-w-0 overflow-y-auto${isMyApi ? '' : ' hidden'}`}>
+        <Activity mode={isMyApi ? 'visible' : 'hidden'}>
+          <main className="flex-1 min-w-0 overflow-y-auto">
+            <MyApiContent initialData={pagesData.initialApiKeysGrouped} />
+          </main>
+        </Activity>
+      </div>
+
       {/* Settings */}
       <div className={`flex-1 min-w-0 overflow-y-auto${isSettings ? '' : ' hidden'}`}>
         <Activity mode={isSettings ? 'visible' : 'hidden'}>
@@ -126,6 +141,7 @@ export function AppContentArea({
             initialMemories={settingsData.initialMemories}
             initialPlugins={settingsData.initialPlugins}
             initialProfile={settingsData.initialProfile}
+            initialApiKeys={pagesData.initialApiKeysGrouped}
           />
         </Activity>
       </div>

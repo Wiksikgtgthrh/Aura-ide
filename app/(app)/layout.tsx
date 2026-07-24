@@ -6,7 +6,7 @@ import { getPreferencesForUser } from '@/app/actions/preferences'
 import { getMemoriesForUser } from '@/app/actions/memories'
 import { getMarketplacePluginsForUser, getInstalledPluginsForUser } from '@/app/actions/plugins'
 import { getProjectsForUser } from '@/app/actions/projects'
-import { getApiKeysForUser } from '@/app/actions/api-keys'
+import { getApiKeysForUser, getApiKeysGroupedForUser } from '@/app/actions/api-keys'
 import { getTeamsForUser } from '@/app/actions/teams'
 import { listChatsForUser } from '@/lib/chat-store'
 import { getSession } from '@/lib/session'
@@ -39,6 +39,7 @@ async function AppShellLoader({
     initialMarketplacePlugins,
     initialProjects,
     initialApiKeys,
+    initialApiKeysGrouped,
     initialInstalledPlugins,
     initialTeams,
   ] = await Promise.all([
@@ -49,6 +50,7 @@ async function AppShellLoader({
     getMarketplacePluginsForUser(userId),
     getProjectsForUser(userId),
     getApiKeysForUser(userId),
+    getApiKeysGroupedForUser(userId),
     getInstalledPluginsForUser(userId),
     getTeamsForUser(userId),
   ])
@@ -68,6 +70,7 @@ async function AppShellLoader({
     initialMarketplacePlugins,
     initialChats,
     initialApiKeys,
+    initialApiKeysGrouped,
     initialInstalledPlugins,
   }
 
@@ -87,6 +90,7 @@ async function AppShellLoader({
         pagesData={pagesData}
         swrFallback={{
           'api-keys': initialApiKeys,
+          'api-keys-grouped': initialApiKeysGrouped,
           'installed-plugins': initialInstalledPlugins,
           'projects': initialProjects,
           'teams': initialTeams,
