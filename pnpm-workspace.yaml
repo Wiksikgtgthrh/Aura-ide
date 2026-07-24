@@ -1,0 +1,14 @@
+# pnpm 10+ читает настройки из этого файла
+# (поле "pnpm" в package.json больше не используется).
+
+# Пин версии hono (транзитивная зависимость better-auth) —
+# раньше жил в package.json -> pnpm.overrides
+overrides:
+  hono: 4.12.25
+
+# Зависимости, которым разрешено запускать build/postinstall-скрипты.
+# Без этого списка pnpm 10+ блокирует скрипты и падает с ERR_PNPM_IGNORED_BUILDS.
+onlyBuiltDependencies:
+  - esbuild
+  - msw
+  - sharp

@@ -1,4 +1,11 @@
 import bundleAnalyzer from '@next/bundle-analyzer'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+// Absolute path to this project. Used to pin the Turbopack workspace root so
+// Next.js doesn't infer it from stray lockfiles elsewhere on the machine
+// (e.g. an accidental package-lock.json in the user's home directory).
+const projectRoot = path.dirname(fileURLToPath(import.meta.url))
 
 // Content-Security-Policy.
 // NOTE: 'unsafe-inline' + 'unsafe-eval' in script-src are required because
@@ -47,6 +54,11 @@ const nextConfig = {
   },
   // Enable the 'use cache' directive for pages and components (Next.js 16)
   cacheComponents: true,
+  // Pin the workspace root so Next.js doesn't guess it from other lockfiles
+  // found in parent directories (silences the "multiple lockfiles" warning).
+  turbopack: {
+    root: projectRoot,
+  },
   // Tree-shake lucide-react: import only the icons actually used instead of
   // the entire library (~600 icons). This alone can cut 100-300 KB from the
   // initial JS bundle.
