@@ -97,7 +97,12 @@ async function probeModel(
   rawKey: string,
   baseUrl: string,
   modelId: string,
-): Promise<{ ok: boolean; ping: number | null; httpStatus?: number }> {
+): Promise<{
+  ok: boolean
+  ping: number | null
+  httpStatus?: number
+  providerMessage?: string
+}> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 15000)
   const started = Date.now()
@@ -121,12 +126,46 @@ async function probeModel(
     if (res.ok) return { ok: true, ping }
     // 400 with a model-related error still proves the key auths; but to be
     // strict about "this model works" we only accept 2xx.
-    return { ok: false, ping: null, httpStatus: res.status }
+    // Surface the provider's OWN error message — «Invalid API key»,
+    // «подписка истекла», «insufficient quota» и т.п. — so the user sees WHY.
+    let providerMessage: string | undefined
+    const bodyText = await res.text().catch(() => '')
+    try {
+      const parsed = JSON.parse(bodyText) as {
+        error?: { message?: string } | string
+        message?: string
+      }
+      providerMessage =
+        typeof parsed.error === 'object' && parsed.error?.message
+          ? parsed.error.message
+          : typeof parsed.error === 'string'
+            ? parsed.error
+            : parsed.message
+    } catch {
+      /* not JSON */
+    }
+    if (!providerMessage && bodyText) providerMessage = bodyText
+    return {
+      ok: false,
+      ping: null,
+      httpStatus: res.status,
+      providerMessage: providerMessage?.slice(0, 140),
+    }
   } catch {
     return { ok: false, ping: null }
   } finally {
     clearTimeout(timeout)
   }
+}
+
+/** Human failReason for a failed model probe, including the provider's own words. */
+function probeFailReason(
+  modelId: string,
+  probe: { httpStatus?: number; providerMessage?: string },
+): string {
+  const status = probe.httpStatus ? `HTTP ${probe.httpStatus}` : 'сеть/таймаут'
+  const detail = probe.providerMessage ? ` — ${probe.providerMessage}` : ''
+  return `Модель ${modelId}: ${status}${detail}`
 }
 
 export type ModelProbeImportResult = {
@@ -407,9 +446,7 @@ export async function checkApiKey(id: number): Promise<ApiKeyStatus | null> {
     .set({
       status,
       ping: probe.ok ? probe.ping : null,
-      failReason: probe.ok
-        ? null
-        : `Модель ${modelId} не отвечает${probe.httpStatus ? ` (HTTP ${probe.httpStatus})` : ' (сеть/таймаут)'}`,
+      failReason: probe.ok ? null : probeFailReason(modelId, probe),
       lastCheckedAt: new Date(),
     })
     .where(and(eq(apiKeys.id, id), eq(apiKeys.userId, userId)))
@@ -435,9 +472,7 @@ export async function checkAllApiKeys(): Promise<ApiKeyItem[] | null> {
         .set({
           status: probe.ok ? 'valid' : 'invalid',
           ping: probe.ok ? probe.ping : null,
-          failReason: probe.ok
-            ? null
-            : `Модель ${modelId} не отвечает${probe.httpStatus ? ` (HTTP ${probe.httpStatus})` : ' (сеть/таймаут)'}`,
+          failReason: probe.ok ? null : probeFailReason(modelId, probe),
           lastCheckedAt: new Date(),
         })
         .where(and(eq(apiKeys.id, r.id), eq(apiKeys.userId, userId)))
