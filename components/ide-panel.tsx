@@ -985,24 +985,52 @@ export function IdePanel({
     setReloadKey((k) => k + 1)
   }
 
-  // Console line: shell-style commands are handled locally, everything else is
-  // evaluated as JS inside the preview iframe.
+  // Run a real command in the project (Docker container, host fallback) and
+  // stream the output into the terminal. Used by the Terminal tab and later
+  // by AI tool-calls.
+  const runRealCommand = useCallback(
+    async (line: string) => {
+      if (!chatId) {
+        appendEntry('error', 'Терминал доступен только в сохранённом проекте', 'term')
+        return
+      }
+      try {
+        const res = await fetch('/api/terminal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chatId, command: line }),
+        })
+        if (!res.ok || !res.body) {
+          appendEntry('error', `Терминал недоступен (HTTP ${res.status})`, 'term')
+          return
+        }
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          const chunk = decoder.decode(value, { stream: true })
+          if (chunk) appendEntry('log', chunk.replace(/\n$/, ''), 'term')
+        }
+      } catch (err) {
+        appendEntry(
+          'error',
+          `Ошибка терминала: ${err instanceof Error ? err.message : 'unknown'}`,
+          'term',
+        )
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [chatId],
+  )
+
+  // Console line. Built-ins (clear/help/ls/cat) and JS eval run instantly in
+  // the browser; everything else is a REAL command executed in the project
+  // environment (Docker/host) and streamed back.
   const handleConsoleSubmit = (line: string) => {
     appendEntry('info', `❯ ${line}`, 'term')
     const [cmd, ...rest] = line.split(/\s+/)
     const arg = rest.join(' ')
-
-    // Honest terminal: system/package-manager commands can't run here — this
-    // is the preview's JS console, not a real shell. Explain instead of
-    // throwing a confusing SyntaxError («pip list» → Unexpected identifier).
-    if (/^(pip|pip3|npm|pnpm|yarn|npx|git|python|python3|node|deno|bun|apt|apt-get|brew|docker|curl|wget|cd|mkdir|rm|touch|sudo)$/.test(cmd)) {
-      appendEntry(
-        'warn',
-        `«${cmd}» — системная команда, а это JS-консоль превью (не настоящий shell). Доступно: ls, cat <файл>, clear, help и любые JS-выражения. Полноценный терминал с окружением проекта — в планах.`,
-        'term',
-      )
-      return
-    }
 
     switch (cmd) {
       case 'clear':
@@ -1012,7 +1040,7 @@ export function IdePanel({
       case 'help':
         appendEntry(
           'log',
-          'Commands: ls, cat <file>, clear, help. Anything else runs as JS in the preview.',
+          'Встроенные: ls, cat <файл>, clear, help. JS-выражения выполняются в превью.\nЛюбая другая команда (npm, pnpm, git, node…) выполняется по-настоящему в окружении проекта (Docker при наличии).',
           'term',
         )
         return
@@ -1035,7 +1063,19 @@ export function IdePanel({
       }
     }
 
-    // Fall through → JS eval in the preview iframe
+    // A JS expression (no shell-ish tokens) → eval in the preview iframe.
+    // A real command (package managers, git, node, shell builtins, pipes) →
+    // execute in the project environment.
+    const looksLikeShell =
+      /^(npm|pnpm|yarn|npx|node|deno|bun|pip|pip3|python|python3|git|ls|cat|cd|mkdir|rm|rmdir|touch|mv|cp|echo|pwd|curl|wget|docker|sh|bash|apk|apt|apt-get|brew|make|tsc|vite|next|env|export|which|whoami)\b/.test(
+        line.trim(),
+      ) || /[|&;><]/.test(line)
+
+    if (looksLikeShell) {
+      void runRealCommand(line)
+      return
+    }
+
     const frame = iframeRef.current
     if (!frame?.contentWindow || !readyRef.current) {
       appendEntry('error', 'Preview is not ready yet', 'term')

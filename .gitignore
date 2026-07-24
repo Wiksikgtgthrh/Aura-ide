@@ -13,5 +13,7 @@ __v0_jsx-dev-runtime.ts
 node_modules
 .next/
 .DS_Store
+# Materialized project working dirs for the terminal (per-chat FS on disk)
+.aura/
 # Локальный источник DATABASE_URL — НЕ коммитить (боевой секрет)
 config.txt
