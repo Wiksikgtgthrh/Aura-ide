@@ -61,9 +61,12 @@ function useRelativeTime() {
 function ProjectCard({
   project,
   onMutate,
+  onDeleted,
 }: {
   project: ProjectItem
   onMutate: () => void
+  /** Optimistically remove THIS project by id (fixes wrong-card removal). */
+  onDeleted: (id: number) => void
 }) {
   const { t } = useLanguage()
   const router = useRouter()
@@ -90,8 +93,10 @@ function ProjectCard({
   }
 
   const handleDelete = async () => {
+    // Optimistic removal by id — the previous mutate()-only flow could leave
+    // the wrong (bottom) card removed until revalidation settled.
+    onDeleted(project.id)
     await deleteProject(project.id)
-    onMutate()
   }
 
   return (
@@ -252,6 +257,12 @@ export function ProjectsContent({
               key={project.id}
               project={project}
               onMutate={() => mutateProjects()}
+              onDeleted={(id) =>
+                mutateProjects(
+                  (prev) => (prev ?? []).filter((p) => p.id !== id),
+                  { revalidate: true },
+                )
+              }
             />
           ))
         )}

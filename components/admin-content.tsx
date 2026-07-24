@@ -104,7 +104,7 @@ export function AdminContent({ isSuperadmin }: { isSuperadmin: boolean }) {
         ))}
       </div>
 
-      <div className="mt-6">
+      <div key={tab} className="mt-6 animate-in fade-in slide-in-from-bottom-1 duration-200">
         {tab === 'overview' && <OverviewTab />}
         {tab === 'users' && <UsersTab isSuperadmin={isSuperadmin} />}
         {tab === 'admins' && (

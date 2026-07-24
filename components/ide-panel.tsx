@@ -395,12 +395,12 @@ const LEVEL_STYLES: Record<PreviewConsoleLevel, string> = {
 // Dark-terminal palette (independent of app light/dark theme — a terminal is
 // always dark, like VS Code's integrated terminal).
 const TERM_LEVEL_STYLES: Record<PreviewConsoleLevel, string> = {
-  log: 'text-zinc-300',
-  info: 'text-sky-400',
-  warn: 'text-amber-400',
-  error: 'text-red-400',
-  debug: 'text-zinc-500',
-  result: 'text-violet-400',
+  log: 'text-foreground/80',
+  info: 'text-sky-600 dark:text-sky-400',
+  warn: 'text-amber-600 dark:text-amber-400',
+  error: 'text-red-600 dark:text-red-400',
+  debug: 'text-muted-foreground',
+  result: 'text-violet-600 dark:text-violet-400',
 }
 
 function formatTs(ts: number): string {
@@ -521,7 +521,7 @@ function BottomPanel({
 
   return (
     <div
-      className={`relative flex shrink-0 flex-col bg-zinc-950 text-zinc-200 ${
+      className={`relative flex shrink-0 flex-col bg-background text-foreground dark:bg-zinc-950 dark:text-zinc-200 ${
         dock === 'bottom' ? 'border-t border-border' : 'h-full border-l border-border'
       }`}
       style={dock === 'bottom' ? { height: size } : { width: size }}
@@ -542,7 +542,7 @@ function BottomPanel({
         />
       </div>
       {/* Tab bar */}
-      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-zinc-800 px-2">
+      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-2">
         {(
           [
             { key: 'logs' as BottomTab, label: t('ideLogsTab'), icon: null },
@@ -558,8 +558,8 @@ function BottomPanel({
             }}
             className={`relative flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors ${
               tab === key
-                ? 'text-zinc-100 after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-full after:bg-zinc-100'
-                : 'text-zinc-500 hover:text-zinc-200'
+                ? 'text-foreground after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-full after:bg-primary'
+                : 'text-muted-foreground hover:text-foreground'
             }`}
           >
             {icon}
@@ -577,14 +577,14 @@ function BottomPanel({
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder={t('ideLogsFilter')}
-          className="ml-auto h-6 w-44 rounded border border-zinc-800 bg-zinc-900 px-2 text-[11px] text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-zinc-600"
+          className="ml-auto h-6 w-44 rounded border border-border bg-muted px-2 text-[11px] text-foreground outline-none placeholder:text-muted-foreground focus:border-ring"
           spellCheck={false}
         />
         <button
           type="button"
           onClick={copyAll}
           title={t('copy')}
-          className="rounded p-1 text-zinc-500 hover:text-zinc-100 transition-colors"
+          className="rounded p-1 text-muted-foreground hover:text-foreground transition-colors"
         >
           <Copy className="size-3" />
         </button>
@@ -592,7 +592,7 @@ function BottomPanel({
           type="button"
           onClick={onClear}
           title={t('ideConsoleClear')}
-          className="rounded p-1 text-zinc-500 hover:text-zinc-100 transition-colors"
+          className="rounded p-1 text-muted-foreground hover:text-foreground transition-colors"
         >
           <Trash2 className="size-3" />
         </button>
@@ -600,7 +600,7 @@ function BottomPanel({
           type="button"
           onClick={onToggleDock}
           title={dock === 'bottom' ? t('ideDockRight') : t('ideDockBottom')}
-          className="rounded p-1 text-zinc-500 hover:text-zinc-100 transition-colors"
+          className="rounded p-1 text-muted-foreground hover:text-foreground transition-colors"
         >
           {dock === 'bottom' ? (
             <PanelRight className="size-3" />
@@ -611,7 +611,7 @@ function BottomPanel({
         <button
           type="button"
           onClick={onClose}
-          className="rounded p-1 text-zinc-500 hover:text-zinc-100 transition-colors"
+          className="rounded p-1 text-muted-foreground hover:text-foreground transition-colors"
           aria-label="Close panel"
         >
           <X className="size-3" />
@@ -629,7 +629,7 @@ function BottomPanel({
         className="flex-1 overflow-y-auto px-3 py-1.5 font-mono text-[11px] leading-relaxed"
       >
         {visible.length === 0 ? (
-          <p className="py-2 text-zinc-500">
+          <p className="py-2 text-muted-foreground">
             {filter
               ? t('searchNoResults')
               : tab === 'logs'
@@ -640,10 +640,10 @@ function BottomPanel({
           visible.map((e) => (
             <div
               key={e.id}
-              className={`group/line flex gap-2 whitespace-pre-wrap break-words py-0.5 ${TERM_LEVEL_STYLES[e.level] ?? 'text-zinc-300'}`}
+              className={`group/line flex gap-2 whitespace-pre-wrap break-words py-0.5 ${TERM_LEVEL_STYLES[e.level] ?? 'text-foreground'}`}
             >
               {tab === 'logs' && (
-                <span className="shrink-0 select-none text-zinc-600">{formatTs(e.ts)}</span>
+                <span className="shrink-0 select-none text-muted-foreground/60">{formatTs(e.ts)}</span>
               )}
               <span className="min-w-0 flex-1">
                 {e.level === 'result'
@@ -673,7 +673,7 @@ function BottomPanel({
 
       {/* Terminal prompt (terminal tab only) */}
       {tab === 'terminal' && (
-        <div className="flex shrink-0 items-center gap-2 border-t border-zinc-800 px-3 py-1.5">
+        <div className="flex shrink-0 items-center gap-2 border-t border-border px-3 py-1.5">
           <span className={`font-mono text-xs ${running ? 'text-amber-400' : 'text-emerald-400'}`}>
             {running ? '◌' : '❯'}
           </span>
@@ -708,7 +708,7 @@ function BottomPanel({
                 }
               }
             }}
-            className="flex-1 bg-transparent font-mono text-[11px] text-zinc-100 outline-none placeholder:text-zinc-600"
+            className="flex-1 bg-transparent font-mono text-[11px] text-foreground outline-none placeholder:text-muted-foreground"
             spellCheck={false}
           />
         </div>
