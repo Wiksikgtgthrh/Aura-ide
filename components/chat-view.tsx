@@ -18,7 +18,7 @@ const IdePanel = dynamic(() => import('@/components/ide-panel').then((m) => m.Id
   ssr: false,
 })
 import type { ChatMode } from '@/lib/chat-store'
-import { Code2, Eye, Loader2, MessageSquare, RotateCcw } from 'lucide-react'
+import { CheckCircle2, Code2, Eye, Loader2, MessageSquare, RotateCcw } from 'lucide-react'
 
 // --- HTML extraction -------------------------------------------------------
 
@@ -52,6 +52,27 @@ function extractPartialHtml(streamingText: string): string | null {
   const after = streamingText.slice(idx + marker.length)
   // Strip trailing closing fence if present
   return after.replace(/```\s*$/, '')
+}
+
+// --- Work status helpers ----------------------------------------------------
+
+/** Stats for the per-reply work summary: ```file: blocks and their lines. */
+function messageWorkStats(text: string): { files: number; lines: number } {
+  const blocks = [...text.matchAll(/```file:[^\n]*\r?\n([\s\S]*?)```/g)]
+  return {
+    files: blocks.length,
+    lines: blocks.reduce((acc, b) => acc + b[1].split('\n').length, 0),
+  }
+}
+
+/** The file currently being streamed (last unclosed ```file: block), if any. */
+function currentStreamingFile(streamingText: string): string | null {
+  const matches = [...streamingText.matchAll(/```file:([^\n`]+)/g)]
+  if (matches.length === 0) return null
+  const last = matches[matches.length - 1]
+  const after = streamingText.slice((last.index ?? 0) + last[0].length)
+  // A closing fence after the last opening means the block is finished.
+  return /\r?\n\s*```/.test(after) ? null : last[1].trim()
 }
 
 // --- TSX/IDE extraction ----------------------------------------------------
@@ -296,6 +317,33 @@ export function ChatView({
 
   const busy = status === 'submitted' || status === 'streaming'
 
+  // ---- Live work status + per-reply summary (v0-style) ---------------------
+  // Track how long each generation took. Client-side wall clock: started when
+  // the request is submitted, attributed to the last assistant message id
+  // when the stream finishes.
+  const workStartRef = useRef<number | null>(null)
+  const [workDurations, setWorkDurations] = useState<Map<string, number>>(
+    () => new Map(),
+  )
+  useEffect(() => {
+    if (status === 'submitted' && workStartRef.current === null) {
+      workStartRef.current = Date.now()
+    }
+    if ((status === 'ready' || status === 'error') && workStartRef.current !== null) {
+      const seconds = Math.max(1, Math.round((Date.now() - workStartRef.current) / 1000))
+      workStartRef.current = null
+      if (status === 'ready') {
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (messages[i].role === 'assistant') {
+            const id = messages[i].id
+            setWorkDurations((prev) => new Map(prev).set(id, seconds))
+            break
+          }
+        }
+      }
+    }
+  }, [status, messages])
+
   // Get the last streaming assistant text (for partial extraction)
   const streamingText = useMemo((): string | null => {
     if (status !== 'streaming') return null
@@ -309,6 +357,12 @@ export function ChatView({
     }
     return null
   }, [messages, status])
+
+  // The file currently being written by the model (live status line)
+  const currentFile = useMemo(
+    () => (streamingText ? currentStreamingFile(streamingText) : null),
+    [streamingText],
+  )
 
   // HTML mode: use partial during streaming, full otherwise
   const previewHtml = useMemo(() => {
@@ -335,11 +389,15 @@ export function ChatView({
     return committed
   }, [messages, mode, streamingText])
 
-  // Show the right panel only once actual content has arrived (not on busy alone)
-  const hasContent = mode === 'html' ? !!previewHtml : ideFiles.size > 0
+  // The right panel is visible from the very start — its toolbar and the
+  // «превью появится здесь» empty state are part of the first impression.
+  // The flag now only drives the entry animation on mount (previously the
+  // panel stayed at opacity-0 until the first generated content, so the
+  // right side looked broken-empty in a fresh chat).
   useEffect(() => {
-    if (hasContent && !panelVisible) setPanelVisible(true)
-  }, [hasContent, panelVisible])
+    const raf = requestAnimationFrame(() => setPanelVisible(true))
+    return () => cancelAnimationFrame(raf)
+  }, [])
 
   // Auto-fallback: if Gateway billing error and user has their own keys, switch to first key.
   // NOTE: no bare '402' check — a provider-side 402 on the user's OWN key also
@@ -427,14 +485,62 @@ export function ChatView({
                       />
                     ) : null,
                   )}
+                  {/* Per-reply work summary (v0-style): duration · files · lines */}
+                  {message.role === 'assistant' &&
+                    (() => {
+                      const text = message.parts
+                        .filter((p) => p.type === 'text')
+                        .map((p) => (p as { text: string }).text)
+                        .join('\n')
+                      const { files, lines } = messageWorkStats(text)
+                      const secs = workDurations.get(message.id)
+                      const isStreamingThis =
+                        busy && message.id === messages[messages.length - 1]?.id
+                      if ((files === 0 && secs === undefined) || isStreamingThis)
+                        return null
+                      const bits: string[] = []
+                      if (secs !== undefined) {
+                        bits.push(
+                          t('doneIn').replace(
+                            '{t}',
+                            secs < 60
+                              ? t('durSec').replace('{s}', String(secs))
+                              : t('durMin')
+                                  .replace('{m}', String(Math.floor(secs / 60)))
+                                  .replace('{s}', String(secs % 60)),
+                          ),
+                        )
+                      }
+                      if (files > 0) {
+                        bits.push(t('filesChanged').replace('{n}', String(files)))
+                        bits.push(t('linesWritten').replace('{n}', String(lines)))
+                      }
+                      return (
+                        <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground/70">
+                          <CheckCircle2 className="size-3.5 shrink-0" />
+                          {bits.join(' · ')}
+                        </p>
+                      )
+                    })()}
                 </div>
               </div>
             ))}
 
-            {status === 'submitted' && (
+            {busy && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground animate-in fade-in duration-300">
-                <Loader2 className="size-4 animate-spin" />
-                {t('thinking')}
+                <Loader2 className="size-4 shrink-0 animate-spin" />
+                {status === 'submitted' ? (
+                  t('thinking')
+                ) : currentFile ? (
+                  <span className="min-w-0 truncate">
+                    {t('writingFile')}{' '}
+                    <code className="font-mono text-xs text-foreground/80">
+                      {currentFile}
+                    </code>
+                  </span>
+                ) : (
+                  t('generating')
+                )}
               </div>
             )}
 
