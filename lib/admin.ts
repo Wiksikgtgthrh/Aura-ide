@@ -31,15 +31,26 @@ export async function getActor(): Promise<AdminActor | null> {
   const uid = session?.user?.id
   if (!uid) return null
 
-  const [row] = await db
-    .select({
-      role: user.role,
-      username: user.username,
-      isAnonymous: user.isAnonymous,
-    })
-    .from(user)
-    .where(eq(user.id, uid))
-    .limit(1)
+  // RESILIENT: if the migration hasn't run yet, the `role` column is missing
+  // and this query throws. getActor() runs in the app layout on EVERY page, so
+  // a throw here would break the WHOLE app. Fall back to role 'user' (no admin)
+  // until the user runs `pnpm migrate:admin`.
+  let row:
+    | { role: string | null; username: string | null; isAnonymous: boolean | null }
+    | undefined
+  try {
+    ;[row] = await db
+      .select({
+        role: user.role,
+        username: user.username,
+        isAnonymous: user.isAnonymous,
+      })
+      .from(user)
+      .where(eq(user.id, uid))
+      .limit(1)
+  } catch {
+    return null // schema not migrated yet — treat as a normal (non-admin) user
+  }
   if (!row) return null
 
   let role = (row.role as Role) ?? 'user'

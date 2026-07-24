@@ -17,6 +17,7 @@
     "migrate:mcp": "node scripts/migrate-mcp.mjs",
     "migrate:plugins": "node scripts/migrate-plugins.mjs",
     "migrate:memories": "node scripts/migrate-memories.mjs",
+    "migrate:admin": "node scripts/migrate-admin.mjs",
     "seed:plugins": "node scripts/seed-plugins.mjs",
     "test": "vitest run"
   },
