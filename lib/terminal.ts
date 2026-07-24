@@ -65,17 +65,37 @@ function containerName(chatId: string): string {
   return `aura-term-${chatId.replace(/[^a-zA-Z0-9_-]/g, '')}`
 }
 
-/** Docker CLI доступен и демон отвечает? */
-export function dockerAvailable(): boolean {
+export type DockerStatus = 'ready' | 'daemon-down' | 'absent'
+
+// Детект Docker дорогой (запуск subprocess) — кэшируем на 20с, чтобы не гонять
+// его на каждую команду. Отрицательный результат тоже кэшируется ненадолго,
+// поэтому после старта Docker Desktop движок подхватится максимум через 20с.
+let dockerCache: { status: DockerStatus; at: number } | null = null
+
+export function dockerStatus(): DockerStatus {
+  if (dockerCache && Date.now() - dockerCache.at < 20_000) return dockerCache.status
+  let status: DockerStatus = 'absent'
   try {
-    const res = spawnSync('docker', ['version', '--format', '{{.Server.Version}}'], {
-      timeout: 5000,
-      encoding: 'utf8',
-    })
-    return res.status === 0 && !!res.stdout?.trim()
+    // Клиент установлен? (`docker --version` не требует демона).
+    const client = spawnSync('docker', ['--version'], { timeout: 5000, encoding: 'utf8' })
+    if (client.status === 0 && /docker/i.test(client.stdout || '')) {
+      // Демон отвечает? `docker info` обращается к движку.
+      const server = spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'], {
+        timeout: 10_000,
+        encoding: 'utf8',
+      })
+      status = server.status === 0 && !!server.stdout?.trim() ? 'ready' : 'daemon-down'
+    }
   } catch {
-    return false
+    status = 'absent'
   }
+  dockerCache = { status, at: Date.now() }
+  return status
+}
+
+/** Docker CLI доступен И демон отвечает? */
+export function dockerAvailable(): boolean {
+  return dockerStatus() === 'ready'
 }
 
 /**

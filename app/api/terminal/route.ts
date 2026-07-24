@@ -1,7 +1,7 @@
 import { getSession } from '@/lib/session'
 import { getChatAccess } from '@/lib/chat-access'
 import {
-  dockerAvailable,
+  dockerStatus,
   ensureIdleSweeper,
   importProjectFromDisk,
   materializeProject,
@@ -71,12 +71,18 @@ export async function POST(req: Request) {
 
       let child: ReturnType<typeof runInProject>['child']
       try {
-        const docker = dockerAvailable()
-        send(
-          docker
-            ? '\x1b[2m[aura] backend: docker (контейнер проекта)\x1b[0m\n'
-            : '\x1b[33m[aura] backend: host — Docker не найден, команда выполняется на вашей машине\x1b[0m\n',
-        )
+        const docker = dockerStatus()
+        if (docker === 'ready') {
+          send('\x1b[2m[aura] backend: docker (контейнер проекта)\x1b[0m\n')
+        } else if (docker === 'daemon-down') {
+          send(
+            '\x1b[33m[aura] Docker установлен, но движок не запущен — запусти Docker Desktop и дождись зелёного значка (в Settings → Resources → WSL Integration движок должен быть включён). Пока команда выполняется на твоей машине (host).\x1b[0m\n',
+          )
+        } else {
+          send(
+            '\x1b[33m[aura] backend: host — Docker не найден, команда выполняется на твоей машине\x1b[0m\n',
+          )
+        }
         child = runInProject(chatId, dir, cmd).child
       } catch (err) {
         send(`[aura] не удалось запустить: ${err instanceof Error ? err.message : 'unknown'}\n`)

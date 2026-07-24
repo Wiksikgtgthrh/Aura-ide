@@ -249,13 +249,23 @@ function MessageText({
         const chunk = text.slice(last, index)
         if (chunk.trim()) out.push({ type: 'text', value: chunk, isFile: false })
       }
-      // Label the pill with the file path when present, else the generic label.
+      // File block → clickable path pill. Bare code block → show its first
+      // non-empty line (e.g. an error message) instead of a generic label, so
+      // «Исправь эту ошибку» actually shows the error, not «Превью обновлено».
       const fileMatch = match[0].match(/```file:([\w./\-]+)/)
-      out.push({
-        type: 'code',
-        value: fileMatch ? fileMatch[1] : label,
-        isFile: !!fileMatch,
-      })
+      let value: string
+      if (fileMatch) {
+        value = fileMatch[1]
+      } else {
+        const inner = match[0]
+          .replace(/^```[^\n]*\r?\n/, '')
+          .replace(/```$/, '')
+          .split('\n')
+          .map((l) => l.trim())
+          .find(Boolean)
+        value = inner ? inner.slice(0, 100) : label
+      }
+      out.push({ type: 'code', value, isFile: !!fileMatch })
       last = index + match[0].length
     }
     if (last < text.length) {
@@ -315,10 +325,11 @@ function MessageText({
         ) : (
           <span
             key={index}
-            className="my-2 flex items-center gap-2 rounded-lg border border-border bg-muted/50 px-3 py-2 text-xs text-muted-foreground"
+            className="my-2 flex items-center gap-2 rounded-lg border border-border bg-muted/50 px-3 py-2 font-mono text-xs text-muted-foreground"
+            title={segment.value}
           >
             <Code2 className="size-3.5 shrink-0" />
-            {label}
+            <span className="truncate">{segment.value}</span>
           </span>
         ),
       )}

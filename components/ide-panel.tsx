@@ -4,7 +4,6 @@ import dynamic from 'next/dynamic'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChevronDown,
-  ChevronLeft,
   ChevronRight,
   ChevronsDownUp,
   Copy,
@@ -1876,46 +1875,33 @@ export function IdePanel({
                     runtime stays warm and the console keeps streaming. The
                     Live overlay renders on top when the Live tab is active. */}
                 <div className={`relative min-h-0 flex-1 flex-col ${showPreview || showLive ? 'flex' : 'hidden'}`}>
-                  {/* Browser-style address bar */}
-                  <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-border bg-background px-2">
-                    <button
-                      type="button"
-                      disabled
-                      aria-label="Back"
-                      className="rounded p-1 text-muted-foreground/40"
-                    >
-                      <ChevronLeft className="size-4" />
-                    </button>
-                    <button
-                      type="button"
-                      disabled
-                      aria-label="Forward"
-                      className="rounded p-1 text-muted-foreground/40"
-                    >
-                      <ChevronRight className="size-4" />
-                    </button>
+                  {/* Preview toolbar — a clean, minimal bar (no fake browser
+                      chrome / dead back-forward buttons, which looked out of
+                      place). Just the live status, a working refresh, device
+                      toggle and open-in-new-tab. */}
+                  <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border bg-background px-2.5">
+                    <span className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                      <span className="size-1.5 rounded-full bg-emerald-500" />
+                      {t('idePreviewTab')}
+                    </span>
+
+                    <span className="flex-1" />
+
                     <button
                       type="button"
                       onClick={handleManualReload}
-                      aria-label="Reload preview"
-                      className="rounded p-1 text-muted-foreground/70 hover:text-foreground transition-transform active:rotate-90 active:scale-90"
+                      title={t('ideLiveReload')}
+                      aria-label={t('ideLiveReload')}
+                      className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground transition-all active:rotate-90 active:scale-90"
                     >
                       <RotateCw className="size-3.5" />
                     </button>
-
-                    {/* Fake URL bar */}
-                    <div className="mx-1 flex h-6 flex-1 items-center gap-1.5 rounded-full border border-border bg-muted/50 px-3">
-                      <span className="size-1.5 rounded-full bg-emerald-500/70" />
-                      <span className="truncate font-mono text-[11px] text-muted-foreground">
-                        localhost / {activeFile.startsWith('src/') ? 'preview' : activeFile}
-                      </span>
-                    </div>
-
                     <button
                       type="button"
                       onClick={() => setMobile((m) => !m)}
-                      aria-label="Toggle mobile viewport"
-                      className={`rounded p-1 transition-colors ${mobile ? 'text-foreground' : 'text-muted-foreground/70 hover:text-foreground'}`}
+                      title={t('ideMobileToggle')}
+                      aria-label={t('ideMobileToggle')}
+                      className={`rounded-md p-1.5 transition-colors ${mobile ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}
                     >
                       <MonitorSmartphone className="size-4" />
                     </button>
@@ -1924,7 +1910,7 @@ export function IdePanel({
                       onClick={handleOpenNewTab}
                       aria-label="Open in new tab"
                       title={t('ideOpenNewTab')}
-                      className="rounded p-1 text-muted-foreground/70 hover:text-foreground transition-transform active:scale-90"
+                      className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground transition-transform active:scale-90"
                     >
                       <ExternalLink className="size-3.5" />
                     </button>
