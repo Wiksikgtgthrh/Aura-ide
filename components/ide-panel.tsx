@@ -651,6 +651,7 @@ export function IdePanel({
   projectName = 'aura-project',
   openFileRequest = null,
   designSelect = false,
+  streamingFilePath = null,
 }: {
   chatId?: string
   files: IdeFiles
@@ -668,6 +669,8 @@ export function IdePanel({
   openFileRequest?: { path: string; epoch: number } | null
   /** Plan mode: element picking is active in the preview tab too. */
   designSelect?: boolean
+  /** Path of the file whose ```file: block is still OPEN in the stream. */
+  streamingFilePath?: string | null
 }) {
   const { t } = useLanguage()
   // Editor preferences from Settings → General (font size, tab size, wrap)
@@ -816,6 +819,34 @@ export function IdePanel({
   const filesRef = useRef<IdeFiles>(localFiles)
   filesRef.current = localFiles
 
+  // The file whose block is currently OPEN in the stream: shown live in the
+  // editor but excluded from autosave, and reconciled when the stream ends —
+  // a user hitting Stop mid-file used to persist a TRUNCATED file to the FS
+  // («Unterminated JSX contents» in the preview after reload).
+  const streamingPathRef = useRef<string | null>(null)
+  if (streamingFilePath) streamingPathRef.current = streamingFilePath
+  const busyRef = useRef(busy)
+  busyRef.current = busy
+  useEffect(() => {
+    if (busy) return
+    const path = streamingPathRef.current
+    if (!path) return
+    streamingPathRef.current = null
+    // `files` (closed blocks only) has the COMPLETE version when the block
+    // finished properly; otherwise the file never completed — drop the stub.
+    const complete = files.get(path)
+    setLocalFiles((prev) => {
+      const next = new Map(prev)
+      if (complete !== undefined) next.set(path, complete)
+      else next.delete(path)
+      return next
+    })
+    if (complete === undefined) {
+      setActiveFile((cur) => (cur === path ? 'src/App.tsx' : cur))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy])
+
   const hasFiles = localFiles.size > 0 || emptyDirs.size > 0
 
   // Sync remote files into local state, preserving any local edits the user has made.
@@ -856,6 +887,20 @@ export function IdePanel({
   useEffect(() => {
     if (!chatId || localFiles.size === 0) return
     const payload = Object.fromEntries(localFiles)
+    // Never persist the file whose stream block is still open — a Stop
+    // mid-generation would otherwise save a truncated, broken file. Keep the
+    // previously saved version of that path (full sync would delete it).
+    if (busyRef.current && streamingPathRef.current) {
+      const p = streamingPathRef.current
+      try {
+        const prev = JSON.parse(lastSavedRef.current || '{}') as Record<string, string>
+        if (prev[p] !== undefined) payload[p] = prev[p]
+        else delete payload[p]
+      } catch {
+        delete payload[p]
+      }
+      if (Object.keys(payload).length === 0) return
+    }
     const serialized = JSON.stringify(payload)
     if (serialized === lastSavedRef.current) return
 

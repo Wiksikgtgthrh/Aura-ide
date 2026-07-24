@@ -155,7 +155,9 @@ function extractDesignChoices(messages: UIMessage[]): string[] | null {
   for (const part of last.parts) {
     if (part.type === 'text') text += part.text
   }
-  const match = text.match(DESIGN_CHOICES_RE)
+  // Design interview chips OR a generic clarifying-question choices block —
+  // both render as clickable chips.
+  const match = text.match(DESIGN_CHOICES_RE) ?? text.match(GENERIC_CHOICES_RE)
   if (!match) return null
   const options = match[1]
     .split('|')
@@ -164,6 +166,13 @@ function extractDesignChoices(messages: UIMessage[]): string[] | null {
     .slice(0, 8)
   return options.length > 0 ? options : null
 }
+
+// Generic clarifying-question options (any enumerable question → chips).
+const GENERIC_CHOICES_RE = /<choices>([\s\S]*?)<\/choices>/
+const GENERIC_CHOICES_STRIP_RE = /<choices>[\s\S]*?(?:<\/choices>|$)/g
+// Plan-mode exit marker emitted by the model when the plan is approved.
+const EXIT_PLAN_RE = /<exit-plan\s*\/?>/
+const EXIT_PLAN_STRIP_RE = /<exit-plan\s*\/?>/g
 
 // Model-suggested next improvements — rendered as chips under the last reply.
 const NEXT_STEPS_RE = /<next-steps>([\s\S]*?)<\/next-steps>/
@@ -204,7 +213,9 @@ function MessageText({
     () =>
       rawText
         .replace(DESIGN_CHOICES_STRIP_RE, '')
+        .replace(GENERIC_CHOICES_STRIP_RE, '')
         .replace(NEXT_STEPS_STRIP_RE, '')
+        .replace(EXIT_PLAN_STRIP_RE, '')
         .trimEnd(),
     [rawText],
   )
@@ -240,11 +251,41 @@ function MessageText({
     return out
   }, [text, label])
 
+  // Render `- [ ]` / `- [x]` lines as a visual todo list (plan mode etc.)
+  const renderText = (value: string, key: number) => {
+    if (!/^\s*-\s\[( |x)\]\s/m.test(value)) return <span key={key}>{value}</span>
+    return (
+      <span key={key}>
+        {value.split('\n').map((line, i) => {
+          const m = line.match(/^\s*-\s\[( |x)\]\s?(.*)$/)
+          if (!m) return <span key={i}>{i > 0 ? '\n' : ''}{line}</span>
+          const checked = m[1] === 'x'
+          return (
+            <span key={i} className="my-0.5 flex items-start gap-2">
+              <span
+                className={`mt-1 flex size-3.5 shrink-0 items-center justify-center rounded border text-[9px] leading-none ${
+                  checked
+                    ? 'border-emerald-500/60 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                    : 'border-muted-foreground/40 text-transparent'
+                }`}
+              >
+                ✓
+              </span>
+              <span className={checked ? 'text-muted-foreground line-through' : ''}>
+                {m[2]}
+              </span>
+            </span>
+          )
+        })}
+      </span>
+    )
+  }
+
   return (
     <>
       {segments.map((segment, index) =>
         segment.type === 'text' ? (
-          <span key={index}>{segment.value}</span>
+          renderText(segment.value, index)
         ) : segment.isFile ? (
           // Clickable file pill — opens the file in the editor (v0-style rows)
           <button
@@ -520,6 +561,19 @@ export function ChatView({
     () => (busy || readOnly ? null : extractNextSteps(messages)),
     [messages, busy, readOnly],
   )
+
+  // The model approved plan-application → it emits <exit-plan/> and the
+  // toggle switches off automatically.
+  useEffect(() => {
+    if (busy || !planModeActive || messages.length === 0) return
+    const last = messages[messages.length - 1]
+    if (last.role !== 'assistant') return
+    const text = last.parts
+      .filter((p) => p.type === 'text')
+      .map((p) => (p as { text: string }).text)
+      .join('\n')
+    if (EXIT_PLAN_RE.test(text)) setPlanModeActive(false)
+  }, [busy, messages, planModeActive])
 
   // Open a file pill from the chat in the editor (mobile: reveal the panel)
   const handleOpenFile = (path: string) => {
@@ -827,7 +881,7 @@ export function ChatView({
                     key={step}
                     type="button"
                     onClick={() => sendMessage({ text: step })}
-                    className="rounded-full border border-dashed border-border bg-background px-3.5 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-accent hover:border-ring/40 active:scale-[0.97] transition-all"
+                    className="rounded-full border border-border bg-background px-3.5 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-accent hover:border-ring/40 active:scale-[0.97] transition-all"
                   >
                     {step}
                   </button>
@@ -946,6 +1000,7 @@ export function ChatView({
                   void stop()
                 }}
                 chatId={chatId}
+                planMode={planModeActive}
                 onPlanModeChange={setPlanModeActive}
               />
             )}
@@ -969,6 +1024,7 @@ export function ChatView({
             busy={busy}
             openFileRequest={openFileReq}
             designSelect={planModeActive}
+            streamingFilePath={currentFile}
             chatCollapsed={chatCollapsed}
             onToggleChat={() => setChatCollapsed((c) => !c)}
             onFixError={(errorText) => {

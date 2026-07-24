@@ -2,7 +2,7 @@
 
 import { useRef, useState, useCallback, useEffect } from 'react'
 import useSWR from 'swr'
-import { ArrowUp, MessageCircleDashed, Square } from 'lucide-react'
+import { ArrowUp, MessageCircle, Square } from 'lucide-react'
 import { ProjectSwitcher } from '@/components/project-switcher'
 import { ModelSwitcher } from '@/components/model-switcher'
 import { GithubIconImportDialog } from '@/components/github-import-dialog'
@@ -41,12 +41,15 @@ export function PromptBox({
   busy = false,
   onStop,
   chatId,
+  planMode: planModeProp,
   onPlanModeChange,
 }: {
   onSubmit?: (payload: PromptBoxSubmitPayload) => void
   busy?: boolean
   onStop?: () => void
   chatId?: string
+  /** Controlled plan mode (the model can auto-exit it via <exit-plan/>). */
+  planMode?: boolean
   /** Live notification when the plan-mode toggle flips (element picking etc). */
   onPlanModeChange?: (on: boolean) => void
 }) {
@@ -61,13 +64,14 @@ export function PromptBox({
   // UI state
   const [value, setValue] = useState('')
   const [isRecording, setIsRecording] = useState(false)
-  // Plan mode: the model discusses/plans instead of writing code
-  const [planMode, setPlanMode] = useState(false)
+  // Plan mode: the model discusses/plans instead of writing code.
+  // Controlled when the parent passes planMode (chat view auto-exits it).
+  const [planModeInternal, setPlanModeInternal] = useState(false)
+  const planMode = planModeProp ?? planModeInternal
   const togglePlanMode = () => {
-    setPlanMode((v) => {
-      onPlanModeChange?.(!v)
-      return !v
-    })
+    const next = !planMode
+    if (planModeProp === undefined) setPlanModeInternal(next)
+    onPlanModeChange?.(next)
   }
   const [generateImages, setGenerateImages] = useState(true)
   const [activeSkills, setActiveSkills] = useState<Set<SkillId>>(new Set())
@@ -251,8 +255,8 @@ export function PromptBox({
                 : 'border-transparent text-muted-foreground hover:border-border hover:text-foreground'
             }`}
           >
-            <MessageCircleDashed
-              className={`size-3.5 transition-transform duration-300 ${planMode ? 'rotate-[360deg] scale-110' : ''}`}
+            <MessageCircle
+              className={`size-3.5 transition-transform duration-300 ${planMode ? 'scale-110' : ''}`}
             />
             <span className="hidden sm:inline">{t('planMode')}</span>
           </button>
