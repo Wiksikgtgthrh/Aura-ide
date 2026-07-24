@@ -432,8 +432,21 @@ export function ChatView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId])
 
+  // Auto-scroll ONLY when the user is already near the bottom — otherwise
+  // scrolling up to read code while the model streams kept yanking the view
+  // back down. `scrollRef` is the messages viewport.
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const stickToBottomRef = useRef(true)
+  const onMessagesScroll = () => {
+    const el = scrollRef.current
+    if (!el) return
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+    stickToBottomRef.current = distance < 120
+  }
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (stickToBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
   }, [messages])
 
   // Play notification sound when streaming finishes
@@ -693,7 +706,7 @@ export function ChatView({
             : 'w-full md:w-[420px] md:shrink-0'
         }`}
       >
-        <div className="flex-1 overflow-y-auto">
+        <div ref={scrollRef} onScroll={onMessagesScroll} className="flex-1 overflow-y-auto">
           <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-8">
             {messages.map((message) => {
               const isUser = message.role === 'user'

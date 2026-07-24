@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync, readdirSync, readFileSync, statSync } from 'n
 import { createHash } from 'node:crypto'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { loadProjectFiles, syncProjectFiles } from '@/lib/chat-store'
+import { scaffoldProject } from '@/lib/project-scaffold'
 
 /**
  * Project terminal backends (глобальная обнова, фаза 1-3, первый срез).
@@ -31,11 +32,25 @@ export function projectDir(chatId: string): string {
   return resolve(process.cwd(), '.aura', 'projects', safe)
 }
 
-/** Экспорт виртуальной ФС (Postgres) на диск перед запуском команды. */
-export async function materializeProject(chatId: string): Promise<string> {
+/**
+ * Экспорт виртуальной ФС (Postgres) на диск перед запуском команды.
+ *
+ * По умолчанию проект достраивается до настоящего Vite-проекта (scaffold:
+ * package.json, vite.config, index.html, main.tsx, tailwind…), если этих
+ * файлов ещё нет. Без этого `npm install` / `npm run dev` не запустятся — у
+ * чат-проектов есть только src/*.tsx. Достроенные файлы затем вернутся в
+ * редактор обратным синком (получается настоящий проект).
+ */
+export async function materializeProject(
+  chatId: string,
+  scaffold = true,
+): Promise<string> {
   const dir = projectDir(chatId)
   mkdirSync(dir, { recursive: true })
-  const files = await loadProjectFiles(chatId)
+  const raw = await loadProjectFiles(chatId)
+  const files = scaffold
+    ? scaffoldProject(raw, { name: `aura-${chatId.slice(0, 8)}` })
+    : raw
   for (const [path, content] of Object.entries(files)) {
     if (SKIP_DIRS.test(path) || path.includes('..')) continue
     const full = join(dir, path)
@@ -244,19 +259,24 @@ export async function startDevServer(
         '--memory', '1536m', '--cpus', '1.5',
         BASE_IMAGE,
         'sh', '-lc',
-        // Vite слушает 0.0.0.0 и заданный порт, чтобы проброс работал.
-        `npm run ${script} -- --host 0.0.0.0 --port ${port} 2>&1 || npm run ${script} 2>&1`,
+        // Ставим зависимости (если нет node_modules), затем запускаем dev на
+        // 0.0.0.0:PORT, чтобы проброс порта работал.
+        `[ -d node_modules ] || npm install --no-audit --no-fund --loglevel=error; ` +
+          `npm run ${script} -- --host 0.0.0.0 --port ${port}`,
       ],
       { windowsHide: true },
     )
   } else {
     backend = 'host'
-    child = spawn(`npm run ${script}`, {
-      cwd: dir,
-      shell: true,
-      windowsHide: true,
-      env: { ...process.env, PORT: String(port), FORCE_COLOR: '1' },
-    })
+    child = spawn(
+      `npm install --no-audit --no-fund --loglevel=error && npm run ${script} -- --host 0.0.0.0 --port ${port}`,
+      {
+        cwd: dir,
+        shell: true,
+        windowsHide: true,
+        env: { ...process.env, PORT: String(port), FORCE_COLOR: '1' },
+      },
+    )
   }
 
   const server: DevServer = { child, port, backend, startedAt: Date.now() }

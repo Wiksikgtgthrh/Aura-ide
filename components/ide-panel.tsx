@@ -20,7 +20,9 @@ import {
   MonitorSmartphone,
   MoreHorizontal,
   MousePointerClick,
+  PanelBottom,
   PanelLeft,
+  PanelRight,
   Pencil,
   RotateCcw,
   RotateCw,
@@ -424,6 +426,10 @@ function BottomPanel({
   running = false,
   onInterrupt,
   focusTerminalEpoch = 0,
+  dock = 'bottom',
+  size = 224,
+  onResize,
+  onToggleDock,
 }: {
   entries: PreviewConsoleEntry[]
   onClear: () => void
@@ -437,6 +443,12 @@ function BottomPanel({
   onInterrupt?: () => void
   /** Bump to force-focus the Terminal tab (a command started running). */
   focusTerminalEpoch?: number
+  /** VS Code-style docking: bottom (default) or right. */
+  dock?: 'bottom' | 'right'
+  /** Panel size in px (height when docked bottom, width when docked right). */
+  size?: number
+  onResize?: (px: number) => void
+  onToggleDock?: () => void
 }) {
   const { t } = useLanguage()
   const [tab, setTab] = useState<BottomTab>('logs')
@@ -489,8 +501,41 @@ function BottomPanel({
 
   const logErrorCount = logEntries.filter((e) => e.level === 'error').length
 
+  // Drag-to-resize (height when docked bottom, width when docked right).
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault()
+    const startPos = dock === 'bottom' ? e.clientY : e.clientX
+    const startSize = size
+    const onMove = (ev: PointerEvent) => {
+      const delta =
+        dock === 'bottom' ? startPos - ev.clientY : startPos - ev.clientX
+      const next = Math.min(Math.max(startSize + delta, 120), 720)
+      onResize?.(next)
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
+
   return (
-    <div className="flex h-56 shrink-0 flex-col border-t border-border bg-zinc-950 text-zinc-200">
+    <div
+      className={`relative flex shrink-0 flex-col bg-zinc-950 text-zinc-200 ${
+        dock === 'bottom' ? 'border-t border-border' : 'h-full border-l border-border'
+      }`}
+      style={dock === 'bottom' ? { height: size } : { width: size }}
+    >
+      {/* Resize handle */}
+      <div
+        onPointerDown={startResize}
+        className={`absolute z-10 ${
+          dock === 'bottom'
+            ? 'inset-x-0 top-0 h-1 cursor-row-resize'
+            : 'inset-y-0 left-0 w-1 cursor-col-resize'
+        } hover:bg-blue-500/40`}
+      />
       {/* Tab bar */}
       <div className="flex h-9 shrink-0 items-center gap-1 border-b border-zinc-800 px-2">
         {(
@@ -545,6 +590,18 @@ function BottomPanel({
           className="rounded p-1 text-zinc-500 hover:text-zinc-100 transition-colors"
         >
           <Trash2 className="size-3" />
+        </button>
+        <button
+          type="button"
+          onClick={onToggleDock}
+          title={dock === 'bottom' ? t('ideDockRight') : t('ideDockBottom')}
+          className="rounded p-1 text-zinc-500 hover:text-zinc-100 transition-colors"
+        >
+          {dock === 'bottom' ? (
+            <PanelRight className="size-3" />
+          ) : (
+            <PanelBottom className="size-3" />
+          )}
         </button>
         <button
           type="button"
@@ -1020,6 +1077,9 @@ export function IdePanel({
   const [termRunning, setTermRunning] = useState(false)
   // Bumped to pull the bottom panel to the Terminal tab (e.g. AI ran a command)
   const [focusTermEpoch, setFocusTermEpoch] = useState(0)
+  // VS Code-style dock: bottom (default) or right, with a resizable size.
+  const [dockPos, setDockPos] = useState<'bottom' | 'right'>('bottom')
+  const [panelSize, setPanelSize] = useState(224)
   const interruptTerminal = useCallback(() => {
     termAbortRef.current?.abort()
   }, [])
@@ -1440,8 +1500,12 @@ export function IdePanel({
       if (data.ok && data.url) {
         setLiveUrl(data.url)
         setLiveState('on')
-        // Dev server needs a moment to boot before the first successful load.
-        setTimeout(() => setLiveReloadKey((k) => k + 1), 2500)
+        // The dev server boots asynchronously (first run: npm install + vite,
+        // ~30-60s). Reload the iframe on a schedule so it catches the server
+        // the moment it's ready, instead of showing a one-shot failed load.
+        ;[3000, 8000, 15000, 25000, 40000, 60000].forEach((ms) =>
+          setTimeout(() => setLiveReloadKey((k) => k + 1), ms),
+        )
       } else {
         setLiveState('off')
       }
@@ -1469,8 +1533,9 @@ export function IdePanel({
 
   return (
     <section className="relative flex min-w-0 flex-1 flex-col bg-muted/30">
-      {/* Toolbar */}
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-background px-3">
+      {/* Toolbar — sticky so the Preview/Design/Live/Code tabs never scroll
+          out of view while code streams into the editor. */}
+      <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-2 border-b border-border bg-background px-3">
         <Button
           variant="ghost"
           size="icon"
@@ -1963,9 +2028,8 @@ export function IdePanel({
             </>
           )}
 
-          {/* Console — independent of project files, opens even in an empty
-              project (e.g. to try JS or read boot logs) */}
-          {consoleOpen && (
+          {/* Console docked at the BOTTOM (default). */}
+          {consoleOpen && dockPos === 'bottom' && (
             <BottomPanel
               entries={consoleEntries}
               onClear={() => setConsoleEntries([])}
@@ -1975,9 +2039,31 @@ export function IdePanel({
               running={termRunning}
               onInterrupt={interruptTerminal}
               focusTerminalEpoch={focusTermEpoch}
+              dock="bottom"
+              size={panelSize}
+              onResize={setPanelSize}
+              onToggleDock={() => setDockPos('right')}
             />
           )}
         </div>
+
+        {/* Console docked to the RIGHT (VS Code-style side panel). */}
+        {consoleOpen && dockPos === 'right' && (
+          <BottomPanel
+            entries={consoleEntries}
+            onClear={() => setConsoleEntries([])}
+            onSubmit={handleConsoleSubmit}
+            onClose={() => setConsoleOpen(false)}
+            onFix={onFixError}
+            running={termRunning}
+            onInterrupt={interruptTerminal}
+            focusTerminalEpoch={focusTermEpoch}
+            dock="right"
+            size={panelSize}
+            onResize={setPanelSize}
+            onToggleDock={() => setDockPos('bottom')}
+          />
+        )}
       </div>
 
       {/* File context menu (right click) */}
