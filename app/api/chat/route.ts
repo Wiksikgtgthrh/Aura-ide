@@ -595,6 +595,17 @@ on those contents, never on older versions from this conversation.`
       // re-sent requests even on a 429 whose retry-after was ~5 HOURS —
       // the user just stared at a spinner for ~10s before the same error.
       maxRetries: 1,
+      // Compact one-line server log instead of the SDK's default multi-page
+      // AI_RetryError/AI_APICallError dump. The user-facing message is built
+      // separately in toUIMessageStream({ onError }) below.
+      onError: ({ error }) => {
+        const { statusCode, providerMessage, retryAfterSec } = extractApiError(error)
+        console.error(
+          `[chat] provider error: model=${usedModelName} status=${statusCode ?? 'n/a'}` +
+            (retryAfterSec ? ` retry-after=${retryAfterSec}s` : '') +
+            (providerMessage ? ` message=${JSON.stringify(providerMessage)}` : ''),
+        )
+      },
       instructions: finalInstructions,
       messages: await convertToModelMessages(windowedMessages),
       onFinish: ({ usage }) => {
