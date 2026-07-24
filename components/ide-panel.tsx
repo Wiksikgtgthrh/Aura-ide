@@ -666,6 +666,20 @@ export function IdePanel({
   const [pendingOp, setPendingOp] = useState<PendingOp>(null)
   const [publishOpen, setPublishOpen] = useState(false)
 
+  // Monaco vs React <Activity>: this panel lives inside an Activity shell
+  // (see app-content-area.tsx), so navigating away hides it and runs effect
+  // cleanups. @monaco-editor/react disposes the underlying editor in its
+  // cleanup but keeps stale internal refs, so when the panel is revealed
+  // again React reconnects the old effects against the disposed instance and
+  // crashes with "InstantiationService has been disposed"
+  // (suren-atoyan/monaco-react#794). Bump an epoch in the cleanup: the state
+  // update is deferred while hidden and applied on reveal, so the editors
+  // below remount fresh instead of reconnecting onto a dead instance.
+  const [editorEpoch, setEditorEpoch] = useState(0)
+  useEffect(() => {
+    return () => setEditorEpoch((e) => e + 1)
+  }, [])
+
   // File explorer: search, right-click context menu, collapse-all
   const [fileSearch, setFileSearch] = useState('')
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; path: string; isDir: boolean } | null>(null)
@@ -1371,6 +1385,7 @@ export function IdePanel({
                 {showCode && (
                   <div className="flex min-h-0 flex-1">
                     <MonacoEditor
+                      key={`editor-${editorEpoch}`}
                       height="100%"
                       language={monacoLanguage(activeFile)}
                       theme="vs-dark"
@@ -1700,6 +1715,7 @@ export function IdePanel({
               <div className="min-w-0 flex-1">
                 {diffPath && (
                   <MonacoDiffEditor
+                    key={`diff-${editorEpoch}`}
                     height="100%"
                     language={monacoLanguage(diffPath)}
                     theme="vs-dark"
