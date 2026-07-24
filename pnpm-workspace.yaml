@@ -6,8 +6,16 @@
 overrides:
   hono: 4.12.25
 
-# Зависимости, которым разрешено запускать build/postinstall-скрипты.
-# Без этого списка pnpm 10+ блокирует скрипты и падает с ERR_PNPM_IGNORED_BUILDS.
+# Разрешение build/postinstall-скриптов зависимостей.
+# Без этого pnpm блокирует скрипты и install падает с ERR_PNPM_IGNORED_BUILDS.
+
+# Новый формат (pnpm 11+): true = разрешено, false = запрещено
+allowBuilds:
+  esbuild: true
+  msw: true
+  sharp: true
+
+# Старый формат (pnpm 10.x) — оставлен для совместимости
 onlyBuiltDependencies:
   - esbuild
   - msw
