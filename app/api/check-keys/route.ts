@@ -7,12 +7,50 @@ import { getSession } from '@/lib/session'
 
 const PING_TIMEOUT_MS = 1500
 const HIGH_PING_THRESHOLD_MS = 1000
+const STREAM_PROBE_TIMEOUT_MS = 4000
 
 type CheckResult = {
   id: number
   status: 'active' | 'error' | 'timeout'
   ping: number | null
   failReason: string | null
+}
+
+/**
+ * Probe the STREAMING path (stream:true) separately: some OpenAI-compatible
+ * proxies serve streaming and non-streaming from different upstream pools, so
+ * a key can pass the regular check while the chat (which streams) fails with
+ * 429/503. We only need the response status — the body is cancelled.
+ */
+async function probeStreaming(
+  rawKey: string,
+  baseUrl: string,
+  modelId: string,
+): Promise<{ ok: boolean; status?: number }> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), STREAM_PROBE_TIMEOUT_MS)
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${rawKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: modelId,
+        messages: [{ role: 'user', content: '.' }],
+        max_tokens: 1,
+        stream: true,
+      }),
+      signal: controller.signal,
+    })
+    void res.body?.cancel().catch(() => {})
+    return { ok: res.ok, status: res.status }
+  } catch {
+    return { ok: false }
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 async function pingKey(id: number, rawKey: string, baseUrl: string, modelId: string): Promise<CheckResult> {
@@ -48,8 +86,18 @@ async function pingKey(id: number, rawKey: string, baseUrl: string, modelId: str
       }
     }
 
-    const highPingWarning = ping > HIGH_PING_THRESHOLD_MS ? ' (высокий пинг)' : ''
-    return { id, status: 'active', ping, failReason: highPingWarning || null }
+    // Non-streaming works — additionally check the streaming path the chat
+    // actually uses, and annotate (NOT deactivate: the chat falls back to
+    // non-streaming automatically when streaming is down).
+    const streamProbe = await probeStreaming(rawKey, baseUrl, modelId)
+    const notes: string[] = []
+    if (ping > HIGH_PING_THRESHOLD_MS) notes.push('высокий пинг')
+    if (!streamProbe.ok) {
+      notes.push(
+        `стриминг у провайдера не работает${streamProbe.status ? ` (HTTP ${streamProbe.status})` : ' (таймаут)'} — чат использует нестриминговый резерв`,
+      )
+    }
+    return { id, status: 'active', ping, failReason: notes.length > 0 ? notes.join('; ') : null }
   } catch (err: unknown) {
     clearTimeout(timer)
     const isAbort = err instanceof Error && err.name === 'AbortError'

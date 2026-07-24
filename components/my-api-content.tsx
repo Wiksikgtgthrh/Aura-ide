@@ -52,7 +52,9 @@ function StatusBadge({ status, checking }: { status: ApiKeyStatus; checking?: bo
       </span>
     )
   }
-  if (status === 'valid') {
+  // 'active' is written by the settings checker (/api/check-keys),
+  // 'valid' by the actions here — both mean the key works.
+  if (status === 'valid' || (status as string) === 'active') {
     return (
       <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
         <CheckCircle2 className="size-3.5" />
@@ -60,7 +62,7 @@ function StatusBadge({ status, checking }: { status: ApiKeyStatus; checking?: bo
       </span>
     )
   }
-  if (status === 'invalid') {
+  if (status === 'invalid' || status === 'error' || status === 'timeout') {
     return (
       <span className="inline-flex items-center gap-1 text-xs font-medium text-destructive">
         <XCircle className="size-3.5" />
@@ -139,6 +141,18 @@ function KeyRow({
           <p className="text-xs text-muted-foreground font-mono truncate">
             {item.maskedKey} · {item.modelId}
           </p>
+          {item.failReason && (
+            <p
+              className={`text-xs truncate mt-0.5 ${
+                item.status === 'invalid' || item.status === 'error' || item.status === 'timeout'
+                  ? 'text-destructive/80'
+                  : 'text-amber-600 dark:text-amber-400/90'
+              }`}
+              title={item.failReason}
+            >
+              {item.failReason}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-1 shrink-0">
           <Button

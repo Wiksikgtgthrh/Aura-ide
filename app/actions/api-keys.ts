@@ -97,7 +97,7 @@ async function probeModel(
   rawKey: string,
   baseUrl: string,
   modelId: string,
-): Promise<{ ok: boolean; ping: number | null }> {
+): Promise<{ ok: boolean; ping: number | null; httpStatus?: number }> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 15000)
   const started = Date.now()
@@ -121,7 +121,7 @@ async function probeModel(
     if (res.ok) return { ok: true, ping }
     // 400 with a model-related error still proves the key auths; but to be
     // strict about "this model works" we only accept 2xx.
-    return { ok: false, ping: null }
+    return { ok: false, ping: null, httpStatus: res.status }
   } catch {
     return { ok: false, ping: null }
   } finally {
@@ -383,40 +383,63 @@ export async function updateApiKey(
   return row ? toItem(row) : null
 }
 
-/** Re-verify a stored key and persist the resulting status. */
+/**
+ * Re-verify a stored key and persist the resulting status.
+ *
+ * Probes the CONFIGURED MODEL with a real 1-token completion — the old
+ * GET /models check only proved the key authenticates, which is why keys
+ * showed «Работает» while the chat model was actually down at the provider.
+ */
 export async function checkApiKey(id: number): Promise<ApiKeyStatus | null> {
   const userId = await getUserIdOrNull()
   if (!userId) return null
   const [row] = await db
-    .select({ key: apiKeys.key, baseUrl: apiKeys.baseUrl })
+    .select({ key: apiKeys.key, baseUrl: apiKeys.baseUrl, modelId: apiKeys.modelId })
     .from(apiKeys)
     .where(and(eq(apiKeys.id, id), eq(apiKeys.userId, userId)))
     .limit(1)
   if (!row) return null
-  const status = await verifyKey(decryptSecret(row.key), row.baseUrl)
+  const modelId = row.modelId || DEFAULT_MODEL_ID
+  const probe = await probeModel(decryptSecret(row.key), row.baseUrl, modelId)
+  const status: ApiKeyStatus = probe.ok ? 'valid' : 'invalid'
   await db
     .update(apiKeys)
-    .set({ status, lastCheckedAt: new Date() })
+    .set({
+      status,
+      ping: probe.ok ? probe.ping : null,
+      failReason: probe.ok
+        ? null
+        : `Модель ${modelId} не отвечает${probe.httpStatus ? ` (HTTP ${probe.httpStatus})` : ' (сеть/таймаут)'}`,
+      lastCheckedAt: new Date(),
+    })
     .where(and(eq(apiKeys.id, id), eq(apiKeys.userId, userId)))
   revalidateTag('api-keys', 'max')
   return status
 }
 
-/** Re-verify all of the user's keys. Returns the refreshed list. */
+/** Re-verify all of the user's keys (real model probe). Returns the refreshed list. */
 export async function checkAllApiKeys(): Promise<ApiKeyItem[] | null> {
   const userId = await getUserIdOrNull()
   if (!userId) return null
   const rows = await db
-    .select({ id: apiKeys.id, key: apiKeys.key, baseUrl: apiKeys.baseUrl })
+    .select({ id: apiKeys.id, key: apiKeys.key, baseUrl: apiKeys.baseUrl, modelId: apiKeys.modelId })
     .from(apiKeys)
     .where(eq(apiKeys.userId, userId))
 
   await Promise.all(
     rows.map(async (r) => {
-      const status = await verifyKey(decryptSecret(r.key), r.baseUrl)
+      const modelId = r.modelId || DEFAULT_MODEL_ID
+      const probe = await probeModel(decryptSecret(r.key), r.baseUrl, modelId)
       await db
         .update(apiKeys)
-        .set({ status, lastCheckedAt: new Date() })
+        .set({
+          status: probe.ok ? 'valid' : 'invalid',
+          ping: probe.ok ? probe.ping : null,
+          failReason: probe.ok
+            ? null
+            : `Модель ${modelId} не отвечает${probe.httpStatus ? ` (HTTP ${probe.httpStatus})` : ' (сеть/таймаут)'}`,
+          lastCheckedAt: new Date(),
+        })
         .where(and(eq(apiKeys.id, r.id), eq(apiKeys.userId, userId)))
     }),
   )

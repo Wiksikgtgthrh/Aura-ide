@@ -2,8 +2,10 @@ import {
   convertToModelMessages,
   createUIMessageStreamResponse,
   generateText,
+  simulateStreamingMiddleware,
   streamText,
   toUIMessageStream,
+  wrapLanguageModel,
   type UIMessage,
 } from 'ai'
 import { createOpenAI } from '@ai-sdk/openai'
@@ -589,48 +591,118 @@ on those contents, never on older versions from this conversation.`
       : allMessages
 
   try {
-    const result = streamText({
-      model,
-      // One retry only. The SDK default (2 retries with backoff) blindly
-      // re-sent requests even on a 429 whose retry-after was ~5 HOURS —
-      // the user just stared at a spinner for ~10s before the same error.
-      maxRetries: 1,
-      // Compact one-line server log instead of the SDK's default multi-page
-      // AI_RetryError/AI_APICallError dump. The user-facing message is built
-      // separately in toUIMessageStream({ onError }) below.
-      onError: ({ error }) => {
-        const { statusCode, providerMessage, retryAfterSec } = extractApiError(error)
-        console.error(
-          `[chat] provider error: model=${usedModelName} status=${statusCode ?? 'n/a'}` +
-            (retryAfterSec ? ` retry-after=${retryAfterSec}s` : '') +
-            (providerMessage ? ` message=${JSON.stringify(providerMessage)}` : ''),
-        )
-      },
-      instructions: finalInstructions,
-      messages: await convertToModelMessages(windowedMessages),
-      onFinish: ({ usage }) => {
-        // Token accounting — per account (guests too). Own-key usage carries
-        // the key id; built-in Gateway usage has apiKeyId NULL (rate-limited).
-        const u = usage as unknown as {
-          inputTokens?: number
-          outputTokens?: number
-          promptTokens?: number
-          completionTokens?: number
+    const modelMessages = await convertToModelMessages(windowedMessages)
+
+    const startStream = (
+      m: Parameters<typeof streamText>[0]['model'],
+      retries: number,
+    ) =>
+      streamText({
+        model: m,
+        // One retry only. The SDK default (2 retries with backoff) blindly
+        // re-sent requests even on a 429 whose retry-after was ~5 HOURS —
+        // the user just stared at a spinner for ~10s before the same error.
+        maxRetries: retries,
+        // Compact one-line server log instead of the SDK's default multi-page
+        // AI_RetryError/AI_APICallError dump. The user-facing message is built
+        // separately in toUIMessageStream({ onError }) below.
+        onError: ({ error }) => {
+          const { statusCode, providerMessage, retryAfterSec } = extractApiError(error)
+          console.error(
+            `[chat] provider error: model=${usedModelName} status=${statusCode ?? 'n/a'}` +
+              (retryAfterSec ? ` retry-after=${retryAfterSec}s` : '') +
+              (providerMessage ? ` message=${JSON.stringify(providerMessage)}` : ''),
+          )
+        },
+        instructions: finalInstructions,
+        messages: modelMessages,
+        onFinish: ({ usage }) => {
+          // Token accounting — per account (guests too). Own-key usage carries
+          // the key id; built-in Gateway usage has apiKeyId NULL (rate-limited).
+          const u = usage as unknown as {
+            inputTokens?: number
+            outputTokens?: number
+            promptTokens?: number
+            completionTokens?: number
+          }
+          void recordTokenUsage({
+            userId,
+            chatId: id,
+            apiKeyId: usedApiKeyId,
+            modelId: usedModelName,
+            promptTokens: u?.inputTokens ?? u?.promptTokens ?? 0,
+            completionTokens: u?.outputTokens ?? u?.completionTokens ?? 0,
+          })
+        },
+      })
+
+    const primary = startStream(model, 1)
+
+    // ---- Streaming → non-streaming fallback ---------------------------------
+    // Some OpenAI-compatible proxies (codex.sale и др.) serve stream:true and
+    // stream:false from DIFFERENT upstream pools: the non-streaming path works
+    // while the streaming one returns 429/503. The key checker sends a
+    // non-streaming request, so keys show «работает», while the chat
+    // (stream:true) fails — both observations are real. Peek at the head of
+    // the stream: if the request died with a retriable provider error on the
+    // user's own key, retry ONCE with simulateStreamingMiddleware — a plain
+    // non-streaming HTTP call whose result is streamed to the client.
+    const stream = await (async () => {
+      const reader = primary.stream.getReader()
+      type Part = NonNullable<Awaited<ReturnType<typeof reader.read>>['value']>
+      const buffered: Part[] = []
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffered.push(value)
+          const part = value as { type: string; error?: unknown }
+          if (part.type === 'error') {
+            const { statusCode } = extractApiError(part.error)
+            const retriable =
+              statusCode === 429 ||
+              (typeof statusCode === 'number' && statusCode >= 500)
+            if (retriable && usedApiKeyId !== null && typeof model !== 'string') {
+              console.error(
+                `[chat] streaming call failed (${statusCode}) — retrying via non-streaming fallback`,
+              )
+              void reader.cancel().catch(() => {})
+              const fallback = startStream(
+                wrapLanguageModel({
+                  model,
+                  middleware: simulateStreamingMiddleware(),
+                }),
+                0,
+              )
+              return fallback.stream
+            }
+            break // non-retriable — pass the error part through to the client
+          }
+          // 'start' / 'start-step' are pre-request bookkeeping; any other part
+          // means the provider is answering — stop peeking, pass through.
+          if (part.type !== 'start' && part.type !== 'start-step') break
         }
-        void recordTokenUsage({
-          userId,
-          chatId: id,
-          apiKeyId: usedApiKeyId,
-          modelId: usedModelName,
-          promptTokens: u?.inputTokens ?? u?.promptTokens ?? 0,
-          completionTokens: u?.outputTokens ?? u?.completionTokens ?? 0,
-        })
-      },
-    })
+      } catch {
+        /* stream threw synchronously — pass through whatever is buffered */
+      }
+      return new ReadableStream<Part>({
+        start(controller) {
+          for (const p of buffered) controller.enqueue(p)
+        },
+        async pull(controller) {
+          const { done, value } = await reader.read()
+          if (done) controller.close()
+          else controller.enqueue(value)
+        },
+        cancel(reason) {
+          return reader.cancel(reason)
+        },
+      })
+    })()
 
     return createUIMessageStreamResponse({
       stream: toUIMessageStream({
-        stream: result.stream,
+        stream,
         originalMessages: allMessages,
         // Errors thrown mid-stream (the route already returned 200 by then)
         // become an error part in the UI stream. Without this mapper the
