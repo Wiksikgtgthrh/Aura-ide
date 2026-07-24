@@ -306,7 +306,11 @@ export function ChatView({
     generateImages: true,
     activeSkills: [],
     autoPermissions: 'ask',
+    planMode: false,
   })
+  // Plan mode is live (not only at submit): it enables element picking in the
+  // preview so the user can point at components while discussing the plan.
+  const [planModeActive, setPlanModeActive] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const sentPendingRef = useRef(false)
   const [chatCollapsed, setChatCollapsed] = useState(false)
@@ -489,6 +493,7 @@ export function ChatView({
       generateImages: payload.generateImages,
       activeSkills: payload.activeSkills,
       autoPermissions: payload.autoPermissions,
+      planMode: payload.planMode,
     }
     // Attach the design-mode element context so the model knows exactly
     // WHICH element the user is talking about.
@@ -522,10 +527,21 @@ export function ChatView({
     if (window.innerWidth < 768) setChatCollapsed(true)
   }
 
-  // Roll the project back to the state of a specific assistant reply
+  // Roll the project back to the state of a specific assistant reply.
+  // Two-step confirmation (first click arms the button) — window.confirm()
+  // is not available in some browsers/app modes.
+  const [armedRollback, setArmedRollback] = useState<string | null>(null)
   const handleRollback = async (messageId: string) => {
     if (rollingBack || busy) return
-    if (!window.confirm(t('rollbackConfirm'))) return
+    if (armedRollback !== messageId) {
+      setArmedRollback(messageId)
+      window.setTimeout(
+        () => setArmedRollback((cur) => (cur === messageId ? null : cur)),
+        4000,
+      )
+      return
+    }
+    setArmedRollback(null)
     setRollingBack(messageId)
     try {
       const ok = await rollbackToMessage(chatId, messageId)
@@ -719,14 +735,20 @@ export function ChatView({
                                   type="button"
                                   disabled={busy || rollingBack !== null}
                                   onClick={() => void handleRollback(message.id)}
-                                  className="mt-1.5 flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground transition-all hover:bg-accent hover:text-foreground active:scale-95 disabled:opacity-50"
+                                  className={`mt-1.5 flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition-all active:scale-95 disabled:opacity-50 ${
+                                    armedRollback === message.id
+                                      ? 'border-destructive/50 bg-destructive/10 text-destructive'
+                                      : 'border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground'
+                                  }`}
                                 >
                                   {rollingBack === message.id ? (
                                     <Loader2 className="size-3 animate-spin" />
                                   ) : (
                                     <History className="size-3" />
                                   )}
-                                  {t('rollbackToHere')}
+                                  {armedRollback === message.id
+                                    ? t('rollbackArmed')
+                                    : t('rollbackToHere')}
                                 </button>
                               )}
                             </>
@@ -924,21 +946,20 @@ export function ChatView({
                   void stop()
                 }}
                 chatId={chatId}
+                onPlanModeChange={setPlanModeActive}
               />
             )}
           </div>
         </div>
       </div>
 
-      {/* Right panel — animated entry */}
+      {/* Right panel — animated entry. NOTE: opacity only, no translate —
+          a transform here creates a CSS containing block that breaks every
+          position:fixed child (context menus appeared far from the cursor). */}
       <div
-        className={`min-w-0 flex-1 transition-all duration-500 ease-out ${
+        className={`min-w-0 flex-1 transition-opacity duration-500 ease-out ${
           chatCollapsed ? 'flex' : 'hidden md:flex'
-        } ${
-          panelVisible || chatCollapsed
-            ? 'opacity-100 translate-x-0'
-            : 'opacity-0 translate-x-8'
-        }`}
+        } ${panelVisible || chatCollapsed ? 'opacity-100' : 'opacity-0'}`}
       >
         {mode === 'ide' ? (
           <IdePanel
@@ -947,6 +968,7 @@ export function ChatView({
             initialFiles={initialFiles}
             busy={busy}
             openFileRequest={openFileReq}
+            designSelect={planModeActive}
             chatCollapsed={chatCollapsed}
             onToggleChat={() => setChatCollapsed((c) => !c)}
             onFixError={(errorText) => {

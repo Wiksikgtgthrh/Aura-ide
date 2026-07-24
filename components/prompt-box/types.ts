@@ -12,6 +12,8 @@ export type PromptBoxSubmitPayload = {
   generateImages: boolean
   activeSkills: string[]
   autoPermissions: string
+  /** Plan mode: discuss/plan only, no file generation. */
+  planMode: boolean
 }
 
 export const SKILL_IDS = ['web-search', 'code-interpreter', 'diagrams'] as const

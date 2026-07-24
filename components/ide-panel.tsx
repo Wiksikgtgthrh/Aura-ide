@@ -572,9 +572,10 @@ function BottomPanel({
                   <button
                     type="button"
                     onClick={() => onFix(e.text)}
-                    className="ml-2 hidden rounded bg-emerald-800/80 px-1.5 py-0.5 text-[10px] font-medium text-emerald-100 hover:bg-emerald-700 group-hover/line:inline-block"
+                    className="ml-2 hidden select-none items-center gap-1 rounded-full bg-gradient-to-r from-indigo-500 via-violet-500 to-fuchsia-500 px-2.5 py-0.5 text-[10px] font-semibold text-white shadow-sm transition-all duration-200 hover:shadow-[0_0_12px_-2px_rgba(139,92,246,0.8)] hover:brightness-110 active:scale-95 group-hover/line:inline-flex"
                   >
-                    🤖 Исправить с ИИ
+                    <Sparkles className="size-3" />
+                    Исправить с ИИ
                   </button>
                 )}
               </span>
@@ -590,6 +591,7 @@ function BottomPanel({
           <input
             ref={inputRef}
             value={input}
+            placeholder="ls, cat <файл>, help или JS-выражение (консоль превью)"
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') submit()
@@ -648,6 +650,7 @@ export function IdePanel({
   onElementSelect,
   projectName = 'aura-project',
   openFileRequest = null,
+  designSelect = false,
 }: {
   chatId?: string
   files: IdeFiles
@@ -663,6 +666,8 @@ export function IdePanel({
   projectName?: string
   /** A file pill clicked in the chat — open this file in the code tab. */
   openFileRequest?: { path: string; epoch: number } | null
+  /** Plan mode: element picking is active in the preview tab too. */
+  designSelect?: boolean
 }) {
   const { t } = useLanguage()
   // Editor preferences from Settings → General (font size, tab size, wrap)
@@ -700,13 +705,23 @@ export function IdePanel({
   }, [openFileRequest?.epoch])
 
   // ---- Project menu actions -------------------------------------------------
-  const handleRenameProject = async () => {
-    if (!chatId) return
-    const next = window.prompt(t('renameProject'), displayName)
-    const trimmed = next?.trim()
-    if (!trimmed || trimmed === displayName) return
-    await renameChat(chatId, trimmed)
+  // NOTE: window.prompt()/confirm() are unavailable in some browsers and app
+  // modes («prompt() is not supported») — use inline modals instead.
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [renameValue, setRenameValue] = useState('')
+  const [deleteOpen, setDeleteOpen] = useState(false)
+
+  const handleRenameProject = () => {
+    setRenameValue(displayName)
+    setRenameOpen(true)
+  }
+
+  const commitRenameProject = async () => {
+    const trimmed = renameValue.trim()
+    setRenameOpen(false)
+    if (!chatId || !trimmed || trimmed === displayName) return
     setRenamedTitle(trimmed.slice(0, 100))
+    await renameChat(chatId, trimmed)
   }
 
   const handleDuplicateProject = async () => {
@@ -720,9 +735,9 @@ export function IdePanel({
     }
   }
 
-  const handleDeleteProject = async () => {
+  const confirmDeleteProject = async () => {
     if (!chatId) return
-    if (!window.confirm(t('deleteProjectConfirm'))) return
+    setDeleteOpen(false)
     await deleteChat(chatId)
     router.push('/')
   }
@@ -931,6 +946,18 @@ export function IdePanel({
     appendEntry('info', `❯ ${line}`, 'term')
     const [cmd, ...rest] = line.split(/\s+/)
     const arg = rest.join(' ')
+
+    // Honest terminal: system/package-manager commands can't run here — this
+    // is the preview's JS console, not a real shell. Explain instead of
+    // throwing a confusing SyntaxError («pip list» → Unexpected identifier).
+    if (/^(pip|pip3|npm|pnpm|yarn|npx|git|python|python3|node|deno|bun|apt|apt-get|brew|docker|curl|wget|cd|mkdir|rm|touch|sudo)$/.test(cmd)) {
+      appendEntry(
+        'warn',
+        `«${cmd}» — системная команда, а это JS-консоль превью (не настоящий shell). Доступно: ls, cat <файл>, clear, help и любые JS-выражения. Полноценный терминал с окружением проекта — в планах.`,
+        'term',
+      )
+      return
+    }
 
     switch (cmd) {
       case 'clear':
@@ -1204,15 +1231,16 @@ export function IdePanel({
   const showPreview = tab === 'preview' || tab === 'design'
   const showCode = tab === 'code'
 
-  // Toggle the preview's design-select mode when entering/leaving the tab
+  // Toggle the preview's design-select mode when entering/leaving the tab —
+  // or when plan mode turns it on for the regular preview tab.
   useEffect(() => {
     const frame = iframeRef.current
     if (!frame?.contentWindow || !readyRef.current) return
     frame.contentWindow.postMessage(
-      { __aura: true, type: 'design-mode', on: tab === 'design' },
+      { __aura: true, type: 'design-mode', on: tab === 'design' || designSelect },
       '*',
     )
-  }, [tab])
+  }, [tab, designSelect])
 
   const tabLabels: Record<PanelTab, string> = {
     preview: t('idePreviewTab'),
@@ -1366,7 +1394,7 @@ export function IdePanel({
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 className="gap-2.5 text-destructive"
-                onClick={handleDeleteProject}
+                onClick={() => setDeleteOpen(true)}
               >
                 <Trash2 className="size-4" />
                 {t('deleteProject')}
@@ -1387,8 +1415,9 @@ export function IdePanel({
 
       {/* Body */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        {/* File explorer */}
-        {hasFiles && (
+        {/* File explorer — always visible, so the project structure and the
+            new file/folder buttons are there from the first second */}
+        {(
           <aside className="flex w-52 shrink-0 flex-col border-r border-border bg-background/60 py-2">
             <div className="flex items-center px-3 pb-1">
               <p className="truncate text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
@@ -1642,17 +1671,19 @@ export function IdePanel({
                 </div>
               </div>
 
-              {/* Console */}
-              {consoleOpen && (
-                <BottomPanel
-                  entries={consoleEntries}
-                  onClear={() => setConsoleEntries([])}
-                  onSubmit={handleConsoleSubmit}
-                  onClose={() => setConsoleOpen(false)}
-                  onFix={onFixError}
-                />
-              )}
             </>
+          )}
+
+          {/* Console — independent of project files, opens even in an empty
+              project (e.g. to try JS or read boot logs) */}
+          {consoleOpen && (
+            <BottomPanel
+              entries={consoleEntries}
+              onClear={() => setConsoleEntries([])}
+              onSubmit={handleConsoleSubmit}
+              onClose={() => setConsoleOpen(false)}
+              onFix={onFixError}
+            />
           )}
         </div>
       </div>
@@ -1883,6 +1914,74 @@ export function IdePanel({
                   />
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rename project modal */}
+      {renameOpen && (
+        <div
+          className="fixed inset-0 z-[95] flex items-center justify-center bg-foreground/30 p-4 animate-in fade-in duration-150"
+          onClick={() => setRenameOpen(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-xl border border-border bg-background p-4 shadow-2xl animate-in fade-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="text-sm font-medium text-foreground">{t('renameProject')}</p>
+            <input
+              value={renameValue}
+              autoFocus
+              maxLength={100}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void commitRenameProject()
+                if (e.key === 'Escape') setRenameOpen(false)
+              }}
+              className="mt-3 h-9 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setRenameOpen(false)}>
+                {t('cancel')}
+              </Button>
+              <Button
+                size="sm"
+                disabled={!renameValue.trim()}
+                onClick={() => void commitRenameProject()}
+              >
+                {t('save')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete project confirm modal */}
+      {deleteOpen && (
+        <div
+          className="fixed inset-0 z-[95] flex items-center justify-center bg-foreground/30 p-4 animate-in fade-in duration-150"
+          onClick={() => setDeleteOpen(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-xl border border-border bg-background p-4 shadow-2xl animate-in fade-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="text-sm font-medium text-foreground">{t('deleteProject')}</p>
+            <p className="mt-1.5 text-xs text-muted-foreground text-pretty">
+              {t('deleteProjectConfirm')}
+            </p>
+            <div className="mt-3 flex justify-end gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setDeleteOpen(false)}>
+                {t('cancel')}
+              </Button>
+              <Button
+                size="sm"
+                className="bg-destructive text-white hover:bg-destructive/90"
+                onClick={() => void confirmDeleteProject()}
+              >
+                {t('deleteChatLabel')}
+              </Button>
             </div>
           </div>
         </div>

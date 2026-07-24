@@ -164,6 +164,7 @@ export async function POST(req: Request) {
     generateImages,
     activeSkills,
     autoPermissions,
+    planMode,
   }: {
     message: UIMessage
     id: string
@@ -172,6 +173,7 @@ export async function POST(req: Request) {
     generateImages?: boolean
     activeSkills?: string[]
     autoPermissions?: string
+    planMode?: boolean
   } = await req.json()
 
   // Owner or shared-project member. Viewers can read the chat page but may
@@ -416,27 +418,34 @@ export default function App() {
 A "PROJECT STATE" line is appended to these instructions on every request. It is
 AUTHORITATIVE — obey it exactly. There are three states:
 
+### STATE = CHAT
+The user's message is a greeting, small talk or a general question — NOT a
+build request. Respond naturally and helpfully in the user's language. It is
+FORBIDDEN to ask about design/visual style and FORBIDDEN to emit
+<design-choices> or \`\`\`file: blocks in this state. You may close with one
+short sentence inviting them to describe what they want to build. Only if the
+message EXPLICITLY asks to create something (the server rarely misclassifies),
+follow the ASK_DESIGN rules instead.
+
+### STATE = PLAN
+Plan mode is ON (the user toggled it). Discuss, analyse and plan: propose
+architecture, break work into steps, ask clarifying questions, evaluate
+options. When the user attaches a selected element from the preview, explain
+and plan around that exact component. It is FORBIDDEN to emit \`\`\`file:
+blocks or <design-choices> in this state — only conversation. When the plan
+is agreed, tell the user to turn plan mode off to apply the changes.
+
 ### STATE = ASK_DESIGN
-No project files exist and the design interview has not happened yet. FIRST
-classify the user's latest message, then follow exactly ONE branch:
-
-A) The message asks to BUILD or CREATE something (site, app, UI, dashboard,
-   component, game, …):
-   - If it ALREADY describes the desired style/look («в стиле минимализм»,
-     «тёмный», «как у Apple», …) — do NOT ask anything. Act as GENERATE_NOW
-     below: emit the complete project immediately.
-   - Otherwise: do NOT generate files yet. In ONE short sentence (user's
-     language) ask ONLY which visual style they prefer — never ask what to
-     build, you already know. End the reply with EXACTLY this machine-readable
-     block on its own line (renders as clickable chips), labels localized,
-     last one "Другой"/"Other":
+The user asks to BUILD or CREATE something and no files exist yet.
+- If the message ALREADY describes the desired style/look («в стиле
+  минимализм», «тёмный», «как у Apple», …) — do NOT ask anything. Act as
+  GENERATE_NOW below: emit the complete project immediately.
+- Otherwise: do NOT generate files yet. In ONE short sentence (user's
+  language) ask ONLY which visual style they prefer — never ask what to
+  build, you already know. End the reply with EXACTLY this machine-readable
+  block on its own line (renders as clickable chips), labels localized,
+  last one "Другой"/"Other":
 <design-choices>Минимализм|Тёмный дашборд|Яркий и игривый|Корпоративный|Glassmorphism|Другой</design-choices>
-
-B) The message is NOT a build request (greeting like «привет», small talk, a
-   general question): just respond naturally and helpfully in the user's
-   language. NO design question, NO <design-choices> block, NO \`\`\`file:
-   blocks. You may close with one short sentence inviting them to describe
-   what they want to build.
 
 ### STATE = GENERATE_NOW
 The design question was already asked. If the user's latest message answers it
@@ -563,17 +572,26 @@ Do NOT emit this block when you did not emit files.`
   // feeds the live file contents into the model context below.
   const projectFs = isIde ? await loadProjectFiles(id) : {}
 
+  const latestUserText = (enrichedMessage.parts ?? [])
+    .filter((p) => p.type === 'text')
+    .map((p) => (p as { text: string }).text)
+    .join(' ')
+
   const designState = deriveDesignState({
     hasProjectFiles: Object.keys(projectFs).length > 0,
     assistantTexts: assistantMessages.map(assistantText),
+    latestUserText,
   })
+
+  // Plan mode (toggle in the prompt box): discuss and plan, never emit files.
+  const stateLabel = planMode ? 'PLAN' : designState
 
   // ---- Current project files → model context -------------------------------
   // The DB is the source of truth for the virtual FS (it includes the user's
   // MANUAL edits from Monaco, which message history does not). Give the model
   // the live state so it never overwrites user edits with stale code.
   let filesContext = ''
-  if (isIde && designState === 'EXISTING') {
+  if (isIde && (designState === 'EXISTING' || planMode)) {
     const entries = Object.entries(projectFs)
     if (entries.length > 0) {
       const MAX_TOTAL = 48_000
@@ -595,7 +613,7 @@ Do NOT emit this block when you did not emit files.`
   }
 
   const finalInstructions = isIde
-    ? `${instructions}\n\nPROJECT STATE: ${designState}${filesContext}`
+    ? `${instructions}\n\nPROJECT STATE: ${stateLabel}${filesContext}`
     : instructions
 
   const isFirstExchange = previousMessages.length === 0

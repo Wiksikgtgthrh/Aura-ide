@@ -2,7 +2,7 @@
 
 import { useRef, useState, useCallback, useEffect } from 'react'
 import useSWR from 'swr'
-import { ArrowUp, Square } from 'lucide-react'
+import { ArrowUp, MessageCircleDashed, Square } from 'lucide-react'
 import { ProjectSwitcher } from '@/components/project-switcher'
 import { ModelSwitcher } from '@/components/model-switcher'
 import { GithubIconImportDialog } from '@/components/github-import-dialog'
@@ -41,11 +41,14 @@ export function PromptBox({
   busy = false,
   onStop,
   chatId,
+  onPlanModeChange,
 }: {
   onSubmit?: (payload: PromptBoxSubmitPayload) => void
   busy?: boolean
   onStop?: () => void
   chatId?: string
+  /** Live notification when the plan-mode toggle flips (element picking etc). */
+  onPlanModeChange?: (on: boolean) => void
 }) {
   const { t } = useLanguage()
 
@@ -58,6 +61,14 @@ export function PromptBox({
   // UI state
   const [value, setValue] = useState('')
   const [isRecording, setIsRecording] = useState(false)
+  // Plan mode: the model discusses/plans instead of writing code
+  const [planMode, setPlanMode] = useState(false)
+  const togglePlanMode = () => {
+    setPlanMode((v) => {
+      onPlanModeChange?.(!v)
+      return !v
+    })
+  }
   const [generateImages, setGenerateImages] = useState(true)
   const [activeSkills, setActiveSkills] = useState<Set<SkillId>>(new Set())
   const [autoPermissions, setAutoPermissions] = useState<'ask' | 'allow-all'>(() => (prefs?.autoPermissions as 'ask' | 'allow-all') ?? 'ask')
@@ -141,6 +152,7 @@ export function PromptBox({
       generateImages,
       activeSkills: Array.from(activeSkills),
       autoPermissions: syncedAutoPermissions,
+      planMode,
     })
     setValue('')
     setAttachedFiles([])
@@ -226,6 +238,24 @@ export function PromptBox({
           />
 
           <ModelSwitcher value={model} onChange={changeModel} />
+
+          {/* Plan mode toggle — glows blue with a smooth transition when on */}
+          <button
+            type="button"
+            onClick={togglePlanMode}
+            aria-pressed={planMode}
+            title={t('planModeHint')}
+            className={`flex h-8 items-center gap-1.5 rounded-full border px-2.5 text-xs transition-all duration-300 active:scale-95 ${
+              planMode
+                ? 'border-blue-500/60 bg-blue-500/15 text-blue-600 shadow-[0_0_14px_-2px_rgba(59,130,246,0.55)] dark:text-blue-400'
+                : 'border-transparent text-muted-foreground hover:border-border hover:text-foreground'
+            }`}
+          >
+            <MessageCircleDashed
+              className={`size-3.5 transition-transform duration-300 ${planMode ? 'rotate-[360deg] scale-110' : ''}`}
+            />
+            <span className="hidden sm:inline">{t('planMode')}</span>
+          </button>
 
           <div className="ml-auto flex items-center gap-2">
             <ProjectSwitcher />
