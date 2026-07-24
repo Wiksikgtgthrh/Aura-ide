@@ -23,11 +23,14 @@ import {
   getUserDetail,
   setUserRole,
   sendUserPasswordReset,
+  getAdminLimits,
+  updateAdminLimits,
   type AdminOverview,
   type AdminUserRow,
   type AdminUserDetail,
 } from '@/app/actions/admin'
 import type { Role } from '@/lib/admin'
+import type { PlatformLimits } from '@/lib/platform-settings'
 
 type Tab = 'overview' | 'users' | 'admins' | 'plans' | 'plugins' | 'limits'
 
@@ -86,7 +89,7 @@ export function AdminContent({ isSuperadmin }: { isSuperadmin: boolean }) {
         {tab === 'admins' && <UsersTab isSuperadmin={isSuperadmin} adminsOnly />}
         {tab === 'plans' && <ComingTab title="Тарифы" note="Управление тарифами, ценами, API-ключами тарифов и статистикой продаж — в следующей фазе." />}
         {tab === 'plugins' && <ComingTab title="Плагины" note="Загрузка плагинов, цены, авторы, документация и скрытые плагины — в следующей фазе." />}
-        {tab === 'limits' && <ComingTab title="Лимиты" note="ОЗУ/CPU контейнеров и лимиты проектов по тарифам — в следующей фазе." />}
+        {tab === 'limits' && <LimitsTab />}
       </div>
     </div>
   )
@@ -97,6 +100,81 @@ function ComingTab({ title, note }: { title: string; note: string }) {
     <div className="rounded-xl border border-dashed border-border bg-card px-6 py-12 text-center">
       <p className="text-sm font-medium text-foreground">{title}</p>
       <p className="mx-auto mt-1.5 max-w-md text-sm text-muted-foreground text-pretty">{note}</p>
+    </div>
+  )
+}
+
+function LimitsTab() {
+  const [limits, setLimits] = useState<PlatformLimits | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    void (async () => {
+      setLimits(await getAdminLimits())
+      setLoading(false)
+    })()
+  }, [])
+
+  const save = async () => {
+    if (!limits) return
+    setSaving(true)
+    setSaved(false)
+    const ok = await updateAdminLimits(limits)
+    setSaving(false)
+    setSaved(ok)
+    if (ok) setTimeout(() => setSaved(false), 2000)
+  }
+
+  if (loading || !limits) {
+    return (
+      <div className="flex justify-center py-16">
+        <Loader2 className="size-5 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  const field = (
+    label: string,
+    hint: string,
+    key: keyof PlatformLimits,
+    step = 1,
+  ) => (
+    <div className="flex flex-col gap-1.5">
+      <label className="text-sm font-medium text-foreground">{label}</label>
+      <p className="text-xs text-muted-foreground">{hint}</p>
+      <input
+        type="number"
+        step={step}
+        value={limits[key]}
+        onChange={(e) => setLimits({ ...limits, [key]: Number(e.target.value) })}
+        className="h-10 w-40 rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"
+      />
+    </div>
+  )
+
+  return (
+    <div className="flex max-w-lg flex-col gap-5">
+      {field('Память контейнера (МБ)', 'Лимит ОЗУ на контейнер обычного пользователя (Docker --memory).', 'dockerMemoryMb', 128)}
+      {field('CPU контейнера', 'Лимит ядер CPU на контейнер (Docker --cpus).', 'dockerCpus', 0.25)}
+      {field('Лимит проектов (free)', 'Максимум проектов для пользователя на бесплатном тарифе. 0 = без лимита.', 'maxProjectsFree', 1)}
+
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={save}
+          disabled={saving}
+          className="flex items-center gap-2 rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition-all active:scale-95 disabled:opacity-60"
+        >
+          {saving && <Loader2 className="size-4 animate-spin" />}
+          Сохранить
+        </button>
+        {saved && <span className="text-sm text-emerald-600 dark:text-emerald-400">Сохранено ✓</span>}
+      </div>
+      <p className="text-xs text-muted-foreground text-pretty">
+        Новые лимиты применяются к контейнерам, которые создаются после сохранения (уже запущенные — после перезапуска/простоя).
+      </p>
     </div>
   )
 }

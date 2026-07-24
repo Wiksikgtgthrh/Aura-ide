@@ -14,6 +14,7 @@ import { decryptSecret, isEncrypted } from '@/lib/crypto'
 import { auth } from '@/lib/auth'
 import { requireAdmin, type Role } from '@/lib/admin'
 import { dockerContainerStats, type ContainerStat } from '@/lib/terminal'
+import { getLimits, setLimits, type PlatformLimits } from '@/lib/platform-settings'
 
 export type AdminOverview = {
   totals: { users: number; guests: number; projects: number; chats: number }
@@ -191,6 +192,22 @@ export async function setUserRole(userId: string, role: Role): Promise<boolean> 
   if (!target || target.isAnonymous) return false // guests can't be admins
   await db.update(user).set({ role }).where(eq(user.id, userId))
   await audit(actor.id, 'set_role', userId, { role })
+  return true
+}
+
+// ---- Limits (platform settings) --------------------------------------------
+
+export async function getAdminLimits(): Promise<PlatformLimits | null> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return null
+  return getLimits()
+}
+
+export async function updateAdminLimits(next: PlatformLimits): Promise<boolean> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return false
+  await setLimits(next)
+  await audit(actor.id, 'update_limits', '', next)
   return true
 }
 

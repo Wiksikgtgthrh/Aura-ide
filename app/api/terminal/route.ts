@@ -8,6 +8,7 @@ import {
   runInProject,
   touchProject,
 } from '@/lib/terminal'
+import { getLimits } from '@/lib/platform-settings'
 
 export const maxDuration = 300
 
@@ -38,6 +39,7 @@ export async function POST(req: Request) {
   ensureIdleSweeper()
   touchProject(chatId)
   const dir = await materializeProject(chatId)
+  const limits = await getLimits()
   const cmd = command.trim().slice(0, 2000)
 
   const encoder = new TextEncoder()
@@ -83,7 +85,7 @@ export async function POST(req: Request) {
             '\x1b[33m[aura] backend: host — Docker не найден, команда выполняется на твоей машине\x1b[0m\n',
           )
         }
-        child = runInProject(chatId, dir, cmd).child
+        child = runInProject(chatId, dir, cmd, limits).child
       } catch (err) {
         send(`[aura] не удалось запустить: ${err instanceof Error ? err.message : 'unknown'}\n`)
         void finish()

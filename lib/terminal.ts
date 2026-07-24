@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { loadProjectFiles, syncProjectFiles } from '@/lib/chat-store'
 import { scaffoldProject } from '@/lib/project-scaffold'
+import { getLimits, DEFAULT_LIMITS, type PlatformLimits } from '@/lib/platform-settings'
 
 /**
  * Project terminal backends (глобальная обнова, фаза 1-3, первый срез).
@@ -102,7 +103,11 @@ export function dockerAvailable(): boolean {
  * Контейнер проекта запущен? Если нет — поднимаем (lazy). Возвращает имя.
  * Долгая первая загрузка образа идёт в вывод команды, не сюда.
  */
-export function ensureContainer(chatId: string, dir: string): string {
+export function ensureContainer(
+  chatId: string,
+  dir: string,
+  limits: PlatformLimits = DEFAULT_LIMITS,
+): string {
   const name = containerName(chatId)
   const running = spawnSync(
     'docker',
@@ -126,8 +131,9 @@ export function ensureContainer(chatId: string, dir: string): string {
       'run', '-d', '--name', name,
       '-v', `${dir}:/workspace`,
       '-w', '/workspace',
-      '--memory', '1g',
-      '--cpus', '1',
+      // Resource caps from the admin Limits tab (per-user container).
+      '--memory', `${limits.dockerMemoryMb}m`,
+      '--cpus', String(limits.dockerCpus),
       BASE_IMAGE,
       'sleep', 'infinity',
     ],
@@ -147,9 +153,14 @@ export type TerminalRun = {
  * (cmd.exe на Windows, sh на Unix — spawn c shell:true). FORCE_COLOR даёт
  * цветной вывод даже без TTY (npm/vite/eslint это уважают).
  */
-export function runInProject(chatId: string, dir: string, command: string): TerminalRun {
+export function runInProject(
+  chatId: string,
+  dir: string,
+  command: string,
+  limits: PlatformLimits = DEFAULT_LIMITS,
+): TerminalRun {
   if (dockerAvailable()) {
-    const name = ensureContainer(chatId, dir)
+    const name = ensureContainer(chatId, dir, limits)
     const child = spawn(
       'docker',
       ['exec', '-e', 'FORCE_COLOR=1', '-e', 'CI=1', name, 'sh', '-lc', command],
@@ -260,6 +271,7 @@ export async function startDevServer(
   if (existing) return { url: `http://localhost:${existing.port}` }
 
   const dir = await materializeProject(chatId)
+  const limits = await getLimits()
   const port = devPortFor(chatId)
   let child: ChildProcess
   let backend: 'docker' | 'host'
@@ -269,6 +281,8 @@ export async function startDevServer(
     const name = containerName(chatId)
     // Порт публикуется при создании — пересоздаём одноразовый dev-контейнер.
     spawnSync('docker', ['rm', '-f', `${name}-dev`], { timeout: 20000 })
+    // Dev-серверу нужно чуть больше памяти под сборку, чем терминалу.
+    const devMemMb = Math.max(limits.dockerMemoryMb, 1024) + 512
     child = spawn(
       'docker',
       [
@@ -276,7 +290,7 @@ export async function startDevServer(
         '-v', `${dir}:/workspace`, '-w', '/workspace',
         '-p', `${port}:${port}`,
         '-e', `PORT=${port}`, '-e', 'HOST=0.0.0.0', '-e', 'FORCE_COLOR=1',
-        '--memory', '1536m', '--cpus', '1.5',
+        '--memory', `${devMemMb}m`, '--cpus', String(Math.max(limits.dockerCpus, 1)),
         BASE_IMAGE,
         'sh', '-lc',
         // Ставим зависимости (если нет node_modules), затем запускаем dev на
