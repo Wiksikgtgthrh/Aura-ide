@@ -8,9 +8,12 @@ import {
   chats,
   projects,
   adminAudit,
+  plans,
+  platformApiKeys,
+  transactions,
 } from '@/lib/db/schema'
-import { and, desc, eq, ilike, or, sql } from 'drizzle-orm'
-import { decryptSecret, isEncrypted } from '@/lib/crypto'
+import { and, asc, desc, eq, ilike, or, sql } from 'drizzle-orm'
+import { decryptSecret, encryptSecret, isEncrypted } from '@/lib/crypto'
 import { auth } from '@/lib/auth'
 import { requireAdmin, type Role } from '@/lib/admin'
 import { dockerContainerStats, type ContainerStat } from '@/lib/terminal'
@@ -192,6 +195,174 @@ export async function setUserRole(userId: string, role: Role): Promise<boolean> 
   if (!target || target.isAnonymous) return false // guests can't be admins
   await db.update(user).set({ role }).where(eq(user.id, userId))
   await audit(actor.id, 'set_role', userId, { role })
+  return true
+}
+
+// ---- Plans / tariffs --------------------------------------------------------
+
+export type AdminPlan = {
+  id: string
+  key: string
+  title: string
+  priceRub: number
+  features: string[]
+  copy: string
+  visible: boolean
+  position: number
+  purchases: number
+}
+
+const DEFAULT_PLANS = [
+  { key: 'free', title: 'Free', priceRub: 0, position: 0 },
+  { key: 'pro', title: 'Pro', priceRub: 990, position: 1 },
+  { key: 'team', title: 'Team', priceRub: 2990, position: 2 },
+]
+
+/** Ensure the base plans exist (idempotent) so the tab is never empty. */
+async function ensureDefaultPlans() {
+  const existing = await db.select({ key: plans.key }).from(plans)
+  const have = new Set(existing.map((p) => p.key))
+  const missing = DEFAULT_PLANS.filter((p) => !have.has(p.key))
+  if (missing.length > 0) {
+    await db.insert(plans).values(
+      missing.map((p) => ({
+        key: p.key,
+        title: p.title,
+        priceRub: p.priceRub,
+        position: p.position,
+        features: [] as unknown as object,
+      })),
+    )
+  }
+}
+
+export async function listPlans(): Promise<AdminPlan[] | null> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return null
+  await ensureDefaultPlans()
+  const rows = await db.select().from(plans).orderBy(asc(plans.position))
+
+  // Purchase counts from transactions (type 'plan_purchase', description=plan key).
+  const stats = await db
+    .select({ plan: transactions.description, n: sql<number>`count(*)::int` })
+    .from(transactions)
+    .where(eq(transactions.type, 'plan_purchase'))
+    .groupBy(transactions.description)
+  const byPlan = new Map(stats.map((s) => [s.plan, s.n]))
+
+  return rows.map((r) => ({
+    id: r.id,
+    key: r.key,
+    title: r.title,
+    priceRub: r.priceRub,
+    features: Array.isArray(r.features) ? (r.features as string[]) : [],
+    copy: r.copy,
+    visible: r.visible,
+    position: r.position,
+    purchases: byPlan.get(r.key) ?? 0,
+  }))
+}
+
+export async function upsertPlan(input: {
+  id?: string
+  key: string
+  title: string
+  priceRub: number
+  features: string[]
+  copy: string
+  visible: boolean
+  position: number
+}): Promise<boolean> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return false
+  const key = input.key.trim().toLowerCase().slice(0, 40)
+  if (!key) return false
+  const values = {
+    key,
+    title: input.title.trim().slice(0, 80),
+    priceRub: Math.max(0, Math.round(input.priceRub) || 0),
+    features: input.features.slice(0, 20).map((f) => f.slice(0, 120)) as unknown as object,
+    copy: input.copy.slice(0, 2000),
+    visible: !!input.visible,
+    position: Math.max(0, Math.round(input.position) || 0),
+    updatedAt: new Date(),
+  }
+  if (input.id) {
+    await db.update(plans).set(values).where(eq(plans.id, input.id))
+  } else {
+    await db.insert(plans).values(values).onConflictDoUpdate({ target: plans.key, set: values })
+  }
+  await audit(actor.id, 'upsert_plan', input.id ?? key)
+  return true
+}
+
+export async function deletePlan(id: string): Promise<boolean> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return false
+  await db.delete(plans).where(eq(plans.id, id))
+  await audit(actor.id, 'delete_plan', id)
+  return true
+}
+
+export type AdminPlanKey = {
+  id: string
+  planKey: string
+  label: string
+  maskedKey: string
+  modelId: string
+  baseUrl: string
+}
+
+function maskKey(key: string): string {
+  if (key.length <= 8) return '••••••••'
+  return `${key.slice(0, 4)}••••${key.slice(-4)}`
+}
+
+export async function listPlanApiKeys(planKey: string): Promise<AdminPlanKey[] | null> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return null
+  const rows = await db
+    .select()
+    .from(platformApiKeys)
+    .where(eq(platformApiKeys.planKey, planKey))
+    .orderBy(desc(platformApiKeys.createdAt))
+  return rows.map((r) => ({
+    id: r.id,
+    planKey: r.planKey,
+    label: r.label,
+    maskedKey: maskKey(isEncrypted(r.key) ? decryptSecret(r.key) : r.key),
+    modelId: r.modelId,
+    baseUrl: r.baseUrl,
+  }))
+}
+
+export async function addPlanApiKey(input: {
+  planKey: string
+  label: string
+  key: string
+  modelId: string
+  baseUrl: string
+}): Promise<boolean> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return false
+  const key = input.key.trim()
+  if (!key) return false
+  await db.insert(platformApiKeys).values({
+    planKey: input.planKey.trim().toLowerCase().slice(0, 40),
+    label: input.label.trim().slice(0, 80),
+    key: encryptSecret(key),
+    modelId: (input.modelId.trim() || 'gpt-4o-mini').slice(0, 200),
+    baseUrl: (input.baseUrl.trim() || 'https://api.openai.com/v1').slice(0, 300),
+  })
+  await audit(actor.id, 'add_plan_key', input.planKey)
+  return true
+}
+
+export async function deletePlanApiKey(id: string): Promise<boolean> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return false
+  await db.delete(platformApiKeys).where(eq(platformApiKeys.id, id))
+  await audit(actor.id, 'delete_plan_key', id)
   return true
 }
 

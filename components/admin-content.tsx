@@ -25,9 +25,17 @@ import {
   sendUserPasswordReset,
   getAdminLimits,
   updateAdminLimits,
+  listPlans,
+  upsertPlan,
+  deletePlan,
+  listPlanApiKeys,
+  addPlanApiKey,
+  deletePlanApiKey,
   type AdminOverview,
   type AdminUserRow,
   type AdminUserDetail,
+  type AdminPlan,
+  type AdminPlanKey,
 } from '@/app/actions/admin'
 import type { Role } from '@/lib/admin'
 import type { PlatformLimits } from '@/lib/platform-settings'
@@ -87,7 +95,7 @@ export function AdminContent({ isSuperadmin }: { isSuperadmin: boolean }) {
         {tab === 'overview' && <OverviewTab />}
         {tab === 'users' && <UsersTab isSuperadmin={isSuperadmin} />}
         {tab === 'admins' && <UsersTab isSuperadmin={isSuperadmin} adminsOnly />}
-        {tab === 'plans' && <ComingTab title="Тарифы" note="Управление тарифами, ценами, API-ключами тарифов и статистикой продаж — в следующей фазе." />}
+        {tab === 'plans' && <PlansTab />}
         {tab === 'plugins' && <ComingTab title="Плагины" note="Загрузка плагинов, цены, авторы, документация и скрытые плагины — в следующей фазе." />}
         {tab === 'limits' && <LimitsTab />}
       </div>
@@ -100,6 +108,193 @@ function ComingTab({ title, note }: { title: string; note: string }) {
     <div className="rounded-xl border border-dashed border-border bg-card px-6 py-12 text-center">
       <p className="text-sm font-medium text-foreground">{title}</p>
       <p className="mx-auto mt-1.5 max-w-md text-sm text-muted-foreground text-pretty">{note}</p>
+    </div>
+  )
+}
+
+function PlanKeysManager({ planKey }: { planKey: string }) {
+  const [keys, setKeys] = useState<AdminPlanKey[] | null>(null)
+  const [adding, setAdding] = useState(false)
+  const [form, setForm] = useState({ label: '', key: '', modelId: 'gpt-4o-mini', baseUrl: 'https://api.openai.com/v1' })
+  const load = async () => setKeys(await listPlanApiKeys(planKey))
+  useEffect(() => {
+    void load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planKey])
+
+  const add = async () => {
+    if (!form.key.trim()) return
+    await addPlanApiKey({ planKey, ...form })
+    setForm({ label: '', key: '', modelId: 'gpt-4o-mini', baseUrl: 'https://api.openai.com/v1' })
+    setAdding(false)
+    await load()
+  }
+  const remove = async (id: string) => {
+    await deletePlanApiKey(id)
+    await load()
+  }
+
+  return (
+    <div className="mt-3 border-t border-border pt-3">
+      <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-foreground">
+        <KeyRound className="size-3.5" />
+        API-ключи тарифа {keys ? `(${keys.length})` : ''}
+      </div>
+      {keys && keys.length > 0 && (
+        <ul className="mb-2 flex flex-col gap-1.5">
+          {keys.map((k) => (
+            <li key={k.id} className="flex items-center gap-2 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs">
+              <span className="font-medium text-foreground">{k.label || k.modelId}</span>
+              <span className="font-mono text-muted-foreground">{k.maskedKey}</span>
+              <span className="text-muted-foreground/70">{k.modelId}</span>
+              <button type="button" onClick={() => remove(k.id)} className="ml-auto text-muted-foreground hover:text-destructive">
+                <Trash2 className="size-3.5" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {adding ? (
+        <div className="flex flex-col gap-2 rounded-lg border border-border bg-background p-2.5">
+          <div className="grid grid-cols-2 gap-2">
+            <input value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="Название (Aura Max)" className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none" />
+            <input value={form.modelId} onChange={(e) => setForm({ ...form, modelId: e.target.value })} placeholder="ID модели" className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none" />
+          </div>
+          <input value={form.key} onChange={(e) => setForm({ ...form, key: e.target.value })} placeholder="API-ключ (sk-…)" className="h-8 rounded-md border border-border bg-background px-2 font-mono text-xs outline-none" />
+          <input value={form.baseUrl} onChange={(e) => setForm({ ...form, baseUrl: e.target.value })} placeholder="Base URL" className="h-8 rounded-md border border-border bg-background px-2 font-mono text-xs outline-none" />
+          <div className="flex gap-2">
+            <button type="button" onClick={add} disabled={!form.key.trim()} className="rounded-md bg-foreground px-2.5 py-1 text-xs font-medium text-background disabled:opacity-50">Добавить</button>
+            <button type="button" onClick={() => setAdding(false)} className="rounded-md px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground">Отмена</button>
+          </div>
+        </div>
+      ) : (
+        <button type="button" onClick={() => setAdding(true)} className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground">
+          <KeyRound className="size-3.5" /> Добавить ключ
+        </button>
+      )}
+    </div>
+  )
+}
+
+function PlanCard({ plan, onChanged }: { plan: AdminPlan; onChanged: () => void }) {
+  const [edit, setEdit] = useState(false)
+  const [draft, setDraft] = useState(plan)
+  const save = async () => {
+    await upsertPlan({
+      id: plan.id,
+      key: draft.key,
+      title: draft.title,
+      priceRub: draft.priceRub,
+      features: draft.features,
+      copy: draft.copy,
+      visible: draft.visible,
+      position: draft.position,
+    })
+    setEdit(false)
+    onChanged()
+  }
+  const del = async () => {
+    await deletePlan(plan.id)
+    onChanged()
+  }
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-4">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="flex items-center gap-2">
+            <h3 className="font-semibold text-foreground">{plan.title}</h3>
+            <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-[11px] text-muted-foreground">{plan.key}</span>
+            {!plan.visible && <span className="text-[11px] text-muted-foreground">скрыт</span>}
+          </div>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            {plan.priceRub === 0 ? 'Бесплатно' : `${plan.priceRub} ₽`} · покупок: {plan.purchases}
+          </p>
+        </div>
+        <div className="flex items-center gap-1">
+          <button type="button" onClick={() => { setDraft(plan); setEdit((v) => !v) }} className="rounded p-1.5 text-muted-foreground hover:text-foreground"><Pencil className="size-4" /></button>
+          <button type="button" onClick={del} className="rounded p-1.5 text-muted-foreground hover:text-destructive"><Trash2 className="size-4" /></button>
+        </div>
+      </div>
+
+      {plan.features.length > 0 && !edit && (
+        <ul className="mt-2 flex flex-col gap-0.5 text-sm text-muted-foreground">
+          {plan.features.map((f, i) => <li key={i}>• {f}</li>)}
+        </ul>
+      )}
+
+      {edit && (
+        <div className="mt-3 flex flex-col gap-2 border-t border-border pt-3">
+          <div className="grid grid-cols-2 gap-2">
+            <input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="Название" className="h-9 rounded-md border border-border bg-background px-2 text-sm outline-none" />
+            <input value={draft.key} onChange={(e) => setDraft({ ...draft, key: e.target.value })} placeholder="ключ (free)" className="h-9 rounded-md border border-border bg-background px-2 font-mono text-sm outline-none" />
+            <input type="number" value={draft.priceRub} onChange={(e) => setDraft({ ...draft, priceRub: Number(e.target.value) })} placeholder="Цена ₽" className="h-9 rounded-md border border-border bg-background px-2 text-sm outline-none" />
+            <input type="number" value={draft.position} onChange={(e) => setDraft({ ...draft, position: Number(e.target.value) })} placeholder="Порядок" className="h-9 rounded-md border border-border bg-background px-2 text-sm outline-none" />
+          </div>
+          <textarea value={draft.features.join('\n')} onChange={(e) => setDraft({ ...draft, features: e.target.value.split('\n') })} placeholder="Фичи, по одной на строку" rows={3} className="rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none" />
+          <textarea value={draft.copy} onChange={(e) => setDraft({ ...draft, copy: e.target.value })} placeholder="Описание тарифа" rows={2} className="rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none" />
+          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+            <input type="checkbox" checked={draft.visible} onChange={(e) => setDraft({ ...draft, visible: e.target.checked })} />
+            Показывать пользователям
+          </label>
+          <div className="flex gap-2">
+            <button type="button" onClick={save} className="rounded-md bg-foreground px-3 py-1.5 text-sm font-medium text-background">Сохранить</button>
+            <button type="button" onClick={() => setEdit(false)} className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground">Отмена</button>
+          </div>
+        </div>
+      )}
+
+      <PlanKeysManager planKey={plan.key} />
+    </div>
+  )
+}
+
+function PlansTab() {
+  const [list, setList] = useState<AdminPlan[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [creating, setCreating] = useState(false)
+  const [newKey, setNewKey] = useState('')
+
+  const load = async () => {
+    setLoading(true)
+    setList(await listPlans())
+    setLoading(false)
+  }
+  useEffect(() => {
+    void load()
+  }, [])
+
+  const create = async () => {
+    const key = newKey.trim().toLowerCase()
+    if (!key) return
+    await upsertPlan({ key, title: key, priceRub: 0, features: [], copy: '', visible: true, position: (list?.length ?? 0) })
+    setNewKey('')
+    setCreating(false)
+    await load()
+  }
+
+  if (loading) {
+    return <div className="flex justify-center py-16"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
+  }
+  if (!list) return <p className="text-sm text-destructive">Нет доступа.</p>
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">Тарифы, цены и их API-ключи (модели Aura и кастомные).</p>
+        {creating ? (
+          <div className="flex items-center gap-2">
+            <input value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder="ключ (special)" className="h-8 w-32 rounded-md border border-border bg-background px-2 text-sm outline-none" />
+            <button type="button" onClick={create} className="rounded-md bg-foreground px-2.5 py-1 text-xs font-medium text-background">Создать</button>
+            <button type="button" onClick={() => setCreating(false)} className="text-xs text-muted-foreground">Отмена</button>
+          </div>
+        ) : (
+          <button type="button" onClick={() => setCreating(true)} className="rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground">+ Тариф</button>
+        )}
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {list.map((p) => <PlanCard key={p.id} plan={p} onChanged={load} />)}
+      </div>
     </div>
   )
 }
