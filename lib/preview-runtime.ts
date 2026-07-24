@@ -268,9 +268,26 @@ export function buildPreviewBootstrapHtml(): string {
     moduleCache[resolved] = mod;
     var fn = new Function('require', 'module', 'exports', 'React', 'process', code + '\\n//# sourceURL=aura://' + resolved);
     fn(function (s) { return requireModule(resolved, s); }, mod, mod.exports,
-       React, { env: { NODE_ENV: 'development' } });
+       React, { env: parseEnvFile() });
     mod.__loading = false;
     return mod.exports;
+  }
+
+  // Environment variables for the preview: a KEY=VALUE ".env" file in the
+  // project root is parsed and exposed as process.env.* inside modules.
+  function parseEnvFile() {
+    var env = { NODE_ENV: 'development' };
+    var src = files['.env'];
+    if (typeof src === 'string') {
+      var lines = src.split('\\n');
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        if (/^\\s*#/.test(line)) continue;
+        var m = line.match(/^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.*?)\\s*$/);
+        if (m) env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+      }
+    }
+    return env;
   }
 
   // ---------- css injection ----------

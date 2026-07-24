@@ -11,12 +11,14 @@ import {
   Download,
   ExternalLink,
   File,
+  FileKey2,
   FilePlus,
   Folder,
   FolderPlus,
   History,
   Loader2,
   MonitorSmartphone,
+  MoreHorizontal,
   MousePointerClick,
   PanelLeft,
   Pencil,
@@ -26,9 +28,19 @@ import {
   Sparkles,
   SquareTerminal,
   Trash2,
+  Upload,
   X,
 } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { useLanguage } from '@/lib/language'
 import {
   buildPreviewBootstrapHtml,
@@ -43,6 +55,8 @@ import {
   getCheckpointSnapshot,
   restoreCheckpoint,
 } from '@/app/actions/checkpoints'
+import { deleteChat, duplicateChat, renameChat } from '@/app/actions/chats'
+import { downloadZip } from '@/lib/zip'
 import type { CheckpointListItem } from '@/lib/chat-store'
 import useSWR from 'swr'
 import { getPreferences } from '@/app/actions/preferences'
@@ -633,6 +647,7 @@ export function IdePanel({
   onFixError,
   onElementSelect,
   projectName = 'aura-project',
+  openFileRequest = null,
 }: {
   chatId?: string
   files: IdeFiles
@@ -646,6 +661,8 @@ export function IdePanel({
   /** Design mode: the user clicked an element in the preview. */
   onElementSelect?: (el: SelectedElement) => void
   projectName?: string
+  /** A file pill clicked in the chat — open this file in the code tab. */
+  openFileRequest?: { path: string; epoch: number } | null
 }) {
   const { t } = useLanguage()
   // Editor preferences from Settings → General (font size, tab size, wrap)
@@ -665,6 +682,75 @@ export function IdePanel({
   const [emptyDirs, setEmptyDirs] = useState<Set<string>>(new Set())
   const [pendingOp, setPendingOp] = useState<PendingOp>(null)
   const [publishOpen, setPublishOpen] = useState(false)
+  const router = useRouter()
+  // Project menu state: rename result overrides the SSR-provided name
+  const [renamedTitle, setRenamedTitle] = useState<string | null>(null)
+  const displayName = renamedTitle ?? projectName
+  const [menuBusy, setMenuBusy] = useState(false)
+
+  // A file pill was clicked in the chat — open that file in the code tab.
+  useEffect(() => {
+    if (!openFileRequest) return
+    const { path } = openFileRequest
+    if (filesRef.current.has(path)) {
+      setActiveFile(path)
+      setTab('code')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openFileRequest?.epoch])
+
+  // ---- Project menu actions -------------------------------------------------
+  const handleRenameProject = async () => {
+    if (!chatId) return
+    const next = window.prompt(t('renameProject'), displayName)
+    const trimmed = next?.trim()
+    if (!trimmed || trimmed === displayName) return
+    await renameChat(chatId, trimmed)
+    setRenamedTitle(trimmed.slice(0, 100))
+  }
+
+  const handleDuplicateProject = async () => {
+    if (!chatId || menuBusy) return
+    setMenuBusy(true)
+    try {
+      const newId = await duplicateChat(chatId)
+      if (newId) router.push(`/chat/${newId}`)
+    } finally {
+      setMenuBusy(false)
+    }
+  }
+
+  const handleDeleteProject = async () => {
+    if (!chatId) return
+    if (!window.confirm(t('deleteProjectConfirm'))) return
+    await deleteChat(chatId)
+    router.push('/')
+  }
+
+  const handleDownloadProjectZip = () => {
+    if (filesRef.current.size === 0) return
+    downloadZip(
+      Object.fromEntries(filesRef.current),
+      `${displayName.replace(/\s+/g, '-') || 'aura-project'}.zip`,
+    )
+  }
+
+  // Create (if needed) and open the .env file — its KEY=VALUE pairs are
+  // exposed as process.env.* inside the preview runtime.
+  const handleOpenEnvFile = () => {
+    if (!filesRef.current.has('.env')) {
+      setLocalFiles((prev) => {
+        const next = new Map(prev)
+        next.set(
+          '.env',
+          '# Переменные окружения превью (KEY=VALUE)\n# Доступны в коде как process.env.KEY\nVITE_API_URL=\n',
+        )
+        return next
+      })
+    }
+    setActiveFile('.env')
+    setTab('code')
+  }
 
   // Monaco vs React <Activity>: this panel lives inside an Activity shell
   // (see app-content-area.tsx), so navigating away hides it and runs effect
@@ -1222,6 +1308,73 @@ export function IdePanel({
           )}
         </div>
 
+        {/* Project menu — v0-style: rename, duplicate, ZIP, console, .env, delete */}
+        {chatId && (
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              aria-label={t('projectMenu')}
+              className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground"
+            >
+              <MoreHorizontal className="size-4" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="bottom" align="end" className="w-60">
+              <DropdownMenuGroup>
+                <DropdownMenuItem className="gap-2.5" onClick={handleRenameProject}>
+                  <Pencil className="size-4" />
+                  {t('renameProject')}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="gap-2.5"
+                  onClick={handleDuplicateProject}
+                  disabled={menuBusy}
+                >
+                  {menuBusy ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Copy className="size-4" />
+                  )}
+                  {t('duplicateProject')}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="gap-2.5"
+                  onClick={handleDownloadProjectZip}
+                  disabled={localFiles.size === 0}
+                >
+                  <Download className="size-4" />
+                  {t('downloadZip')}
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuGroup>
+                <DropdownMenuItem className="gap-2.5" onClick={() => setConsoleOpen(true)}>
+                  <SquareTerminal className="size-4" />
+                  {t('ideConsole')}
+                </DropdownMenuItem>
+                <DropdownMenuItem className="gap-2.5" onClick={handleOpenEnvFile}>
+                  <FileKey2 className="size-4" />
+                  {t('envFile')}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="gap-2.5"
+                  onClick={() => setPublishOpen(true)}
+                  disabled={localFiles.size === 0}
+                >
+                  <Upload className="size-4" />
+                  {t('publish')}
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className="gap-2.5 text-destructive"
+                onClick={handleDeleteProject}
+              >
+                <Trash2 className="size-4" />
+                {t('deleteProject')}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+
         <Button
           size="sm"
           className="h-8 rounded-full px-4 text-xs transition-transform active:scale-95"
@@ -1239,7 +1392,7 @@ export function IdePanel({
           <aside className="flex w-52 shrink-0 flex-col border-r border-border bg-background/60 py-2">
             <div className="flex items-center px-3 pb-1">
               <p className="truncate text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
-                {projectName}
+                {displayName}
               </p>
               <span className="ml-auto flex shrink-0 items-center gap-0.5">
                 <button
@@ -1739,7 +1892,7 @@ export function IdePanel({
         open={publishOpen}
         onOpenChange={setPublishOpen}
         files={Object.fromEntries(localFiles)}
-        projectName={projectName}
+        projectName={displayName}
       />
     </section>
   )

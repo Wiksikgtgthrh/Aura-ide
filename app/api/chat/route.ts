@@ -455,7 +455,16 @@ Files already exist. Never run the interview again. Apply the requested change
 per the COMPONENT ISOLATION RULE, re-emitting only the changed \`\`\`file: blocks.
 A "CURRENT PROJECT FILES" section is appended below — it is the LIVE state of
 the project including the user's manual edits in the editor. Base every change
-on those contents, never on older versions from this conversation.`
+on those contents, never on older versions from this conversation.
+
+## NEXT-STEP SUGGESTIONS
+Whenever your reply emits \`\`\`file: blocks (GENERATE_NOW or EXISTING), END the
+reply with EXACTLY one machine-readable block on its own line containing 2-3
+SHORT concrete next improvements for THIS project, in the user's language
+(each ≤ 4 words, rendered as clickable chips):
+<next-steps>Добавь тёмную тему|Сделай адаптивную вёрстку|Наполни реальными данными</next-steps>
+Tailor the suggestions to the actual project — never repeat ones already done.
+Do NOT emit this block when you did not emit files.`
 
   // Skills → extra instructions
   const skillInstructions: string[] = []
@@ -606,7 +615,21 @@ on those contents, never on older versions from this conversation.`
       : allMessages
 
   try {
-    const modelMessages = await convertToModelMessages(windowedMessages)
+    // Strip UI-only data parts (e.g. the persisted data-usage token summary)
+    // before converting to model messages — the converter must only see
+    // standard text/file parts.
+    const modelMessages = await convertToModelMessages(
+      windowedMessages.map((m) => ({
+        ...m,
+        parts: (m.parts ?? []).filter(
+          (p) => !String((p as { type: string }).type).startsWith('data-'),
+        ),
+      })) as typeof windowedMessages,
+    )
+
+    // Total tokens of THIS reply — filled by streamText onFinish, streamed to
+    // the client via messageMetadata and persisted as a data-usage part.
+    const usageHolder: { totalTokens: number | null } = { totalTokens: null }
 
     const startStream = (
       m: Parameters<typeof streamText>[0]['model'],
@@ -640,13 +663,16 @@ on those contents, never on older versions from this conversation.`
             promptTokens?: number
             completionTokens?: number
           }
+          const promptTokens = u?.inputTokens ?? u?.promptTokens ?? 0
+          const completionTokens = u?.outputTokens ?? u?.completionTokens ?? 0
+          usageHolder.totalTokens = promptTokens + completionTokens || null
           void recordTokenUsage({
             userId,
             chatId: id,
             apiKeyId: usedApiKeyId,
             modelId: usedModelName,
-            promptTokens: u?.inputTokens ?? u?.promptTokens ?? 0,
-            completionTokens: u?.outputTokens ?? u?.completionTokens ?? 0,
+            promptTokens,
+            completionTokens,
           })
         },
       })
@@ -723,7 +749,37 @@ on those contents, never on older versions from this conversation.`
         // become an error part in the UI stream. Without this mapper the
         // client showed a raw technical dump / generic text.
         onError: (error: unknown) => friendlyModelError(error, usedModelName),
+        // Live token count for the reply summary in the chat (v0-style).
+        messageMetadata: ({ part }) => {
+          const p = part as {
+            type: string
+            totalUsage?: {
+              totalTokens?: number
+              inputTokens?: number
+              outputTokens?: number
+            }
+          }
+          if (p.type === 'finish') {
+            const u = p.totalUsage
+            const total =
+              u?.totalTokens ?? (u ? (u.inputTokens ?? 0) + (u.outputTokens ?? 0) : 0)
+            if (total > 0) return { totalTokens: total }
+          }
+          return undefined
+        },
         onEnd: ({ messages: savedMessages }) => {
+          // Persist the token count inside the message parts (the metadata
+          // itself is not stored) so the summary survives a reload.
+          const last = savedMessages[savedMessages.length - 1]
+          if (last?.role === 'assistant' && usageHolder.totalTokens) {
+            const parts = last.parts as unknown as Array<Record<string, unknown>>
+            if (!parts.some((p) => p.type === 'data-usage')) {
+              parts.push({
+                type: 'data-usage',
+                data: { totalTokens: usageHolder.totalTokens },
+              })
+            }
+          }
           void saveChatMessages(id, savedMessages)
           // Keep the persistent virtual FS in sync with what the model just
           // generated — even if the user closes the tab mid-stream. When the

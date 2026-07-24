@@ -3,8 +3,12 @@
 import { getSession } from '@/lib/session'
 import { getChatAccess, type ChatAccessLevel } from '@/lib/chat-access'
 import {
+  createCheckpoint,
+  extractFilesFromUiMessages,
   getCheckpointFiles,
   listCheckpoints,
+  loadChatMessagesFresh,
+  saveChatMessages,
   syncProjectFiles,
   type CheckpointListItem,
 } from '@/lib/chat-store'
@@ -54,4 +58,46 @@ export async function restoreCheckpoint(
   if (!files) return null
   await syncProjectFiles(chatId, files)
   return files
+}
+
+/**
+ * Roll the CHAT and the project back to the state right after a given
+ * assistant reply: messages after it are deleted and the FS is rebuilt from
+ * the kept history. The current state is checkpointed first (reversible via
+ * «История версий»).
+ */
+export async function rollbackToMessage(
+  chatId: string,
+  messageId: string,
+): Promise<boolean> {
+  const level = await requireAccess(chatId, 'edit')
+  if (!level) return false
+  const all = await loadChatMessagesFresh(chatId)
+  const idx = all.findIndex((m) => m.id === messageId)
+  if (idx === -1) return false
+  const keep = all.slice(0, idx + 1)
+  await createCheckpoint(chatId, 'Перед откатом')
+  await saveChatMessages(chatId, keep)
+  await syncProjectFiles(chatId, extractFilesFromUiMessages(keep))
+  return true
+}
+
+/**
+ * Remove a user message and everything after it (edit-and-resend flow). The
+ * FS is rebuilt from the kept history; current state is checkpointed first.
+ */
+export async function truncateChatFromMessage(
+  chatId: string,
+  messageId: string,
+): Promise<boolean> {
+  const level = await requireAccess(chatId, 'edit')
+  if (!level) return false
+  const all = await loadChatMessagesFresh(chatId)
+  const idx = all.findIndex((m) => m.id === messageId)
+  if (idx === -1) return false
+  const keep = all.slice(0, idx)
+  await createCheckpoint(chatId, 'Перед редактированием сообщения')
+  await saveChatMessages(chatId, keep)
+  await syncProjectFiles(chatId, extractFilesFromUiMessages(keep))
+  return true
 }

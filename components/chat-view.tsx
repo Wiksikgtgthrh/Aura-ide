@@ -18,7 +18,8 @@ const IdePanel = dynamic(() => import('@/components/ide-panel').then((m) => m.Id
   ssr: false,
 })
 import type { ChatMode } from '@/lib/chat-store'
-import { CheckCircle2, Code2, Eye, Loader2, MessageSquare, RotateCcw } from 'lucide-react'
+import { CheckCircle2, Code2, Eye, History, Loader2, MessageSquare, Pencil, Play, RotateCcw } from 'lucide-react'
+import { rollbackToMessage, truncateChatFromMessage } from '@/app/actions/checkpoints'
 
 // --- HTML extraction -------------------------------------------------------
 
@@ -164,16 +165,51 @@ function extractDesignChoices(messages: UIMessage[]): string[] | null {
   return options.length > 0 ? options : null
 }
 
+// Model-suggested next improvements — rendered as chips under the last reply.
+const NEXT_STEPS_RE = /<next-steps>([\s\S]*?)<\/next-steps>/
+const NEXT_STEPS_STRIP_RE = /<next-steps>[\s\S]*?(?:<\/next-steps>|$)/g
+
+function extractNextSteps(messages: UIMessage[]): string[] | null {
+  if (messages.length === 0) return null
+  const last = messages[messages.length - 1]
+  if (last.role !== 'assistant') return null
+  let text = ''
+  for (const part of last.parts) {
+    if (part.type === 'text') text += part.text
+  }
+  const match = text.match(NEXT_STEPS_RE)
+  if (!match) return null
+  const options = match[1]
+    .split('|')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 4)
+  return options.length > 0 ? options : null
+}
+
 // --- Message renderer ------------------------------------------------------
 
-function MessageText({ text: rawText, label }: { text: string; label: string }) {
-  // Hide the machine-readable design block — it renders as chips instead.
+function MessageText({
+  text: rawText,
+  label,
+  onOpenFile,
+}: {
+  text: string
+  label: string
+  /** Open a file pill in the editor (IDE mode). */
+  onOpenFile?: (path: string) => void
+}) {
+  // Hide the machine-readable blocks — they render as chips instead.
   const text = useMemo(
-    () => rawText.replace(DESIGN_CHOICES_STRIP_RE, '').trimEnd(),
+    () =>
+      rawText
+        .replace(DESIGN_CHOICES_STRIP_RE, '')
+        .replace(NEXT_STEPS_STRIP_RE, '')
+        .trimEnd(),
     [rawText],
   )
   const segments = useMemo(() => {
-    const out: { type: 'text' | 'code'; value: string }[] = []
+    const out: { type: 'text' | 'code'; value: string; isFile: boolean }[] = []
 
     // Collapse ANY fenced code block into a pill — including bare ``` fences
     // with no language and file:path blocks. A closed block ends at the next
@@ -186,17 +222,20 @@ function MessageText({ text: rawText, label }: { text: string; label: string }) 
       const index = match.index ?? 0
       if (index > last) {
         const chunk = text.slice(last, index)
-        if (chunk.trim()) out.push({ type: 'text', value: chunk })
+        if (chunk.trim()) out.push({ type: 'text', value: chunk, isFile: false })
       }
       // Label the pill with the file path when present, else the generic label.
       const fileMatch = match[0].match(/```file:([\w./\-]+)/)
-      const pillLabel = fileMatch ? fileMatch[1] : label
-      out.push({ type: 'code', value: pillLabel })
+      out.push({
+        type: 'code',
+        value: fileMatch ? fileMatch[1] : label,
+        isFile: !!fileMatch,
+      })
       last = index + match[0].length
     }
     if (last < text.length) {
       const chunk = text.slice(last)
-      if (chunk.trim()) out.push({ type: 'text', value: chunk })
+      if (chunk.trim()) out.push({ type: 'text', value: chunk, isFile: false })
     }
     return out
   }, [text, label])
@@ -206,6 +245,18 @@ function MessageText({ text: rawText, label }: { text: string; label: string }) 
       {segments.map((segment, index) =>
         segment.type === 'text' ? (
           <span key={index}>{segment.value}</span>
+        ) : segment.isFile ? (
+          // Clickable file pill — opens the file in the editor (v0-style rows)
+          <button
+            key={index}
+            type="button"
+            onClick={() => onOpenFile?.(segment.value)}
+            className="my-2 flex w-full items-center gap-2 rounded-lg border border-border bg-muted/50 px-3 py-2 text-left font-mono text-xs text-muted-foreground transition-colors hover:border-ring/40 hover:bg-accent hover:text-foreground"
+            title={segment.value}
+          >
+            <Code2 className="size-3.5 shrink-0" />
+            <span className="truncate">{segment.value}</span>
+          </button>
         ) : (
           <span
             key={index}
@@ -263,8 +314,17 @@ export function ChatView({
   const [selectedElement, setSelectedElement] = useState<SelectedElement | null>(null)
   // Track whether the right panel has appeared at least once for the entry animation
   const [panelVisible, setPanelVisible] = useState(false)
+  // File pill clicked in chat → open in the editor (epoch forces re-trigger)
+  const [openFileReq, setOpenFileReq] = useState<{ path: string; epoch: number } | null>(null)
+  // Inline editing of a user message (edit-and-resend)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editDraft, setEditDraft] = useState('')
+  const [editBusy, setEditBusy] = useState(false)
+  // Generation was stopped by the user → offer «Продолжить»
+  const [wasStopped, setWasStopped] = useState(false)
+  const [rollingBack, setRollingBack] = useState<string | null>(null)
 
-  const { messages, sendMessage, regenerate, status, stop, error } = useChat({
+  const { messages, sendMessage, regenerate, status, stop, error, setMessages } = useChat({
     id: chatId,
     messages: initialMessages,
     transport: new DefaultChatTransport({
@@ -328,6 +388,8 @@ export function ChatView({
   useEffect(() => {
     if (status === 'submitted' && workStartRef.current === null) {
       workStartRef.current = Date.now()
+      // A new request started via any path — the «Продолжить» offer is stale.
+      setWasStopped(false)
     }
     if ((status === 'ready' || status === 'error') && workStartRef.current !== null) {
       const seconds = Math.max(1, Math.round((Date.now() - workStartRef.current) / 1000))
@@ -448,6 +510,52 @@ export function ChatView({
     [messages, busy],
   )
 
+  // Model-suggested next improvements (chips under the last reply)
+  const nextSteps = useMemo(
+    () => (busy || readOnly ? null : extractNextSteps(messages)),
+    [messages, busy, readOnly],
+  )
+
+  // Open a file pill from the chat in the editor (mobile: reveal the panel)
+  const handleOpenFile = (path: string) => {
+    setOpenFileReq((prev) => ({ path, epoch: (prev?.epoch ?? 0) + 1 }))
+    if (window.innerWidth < 768) setChatCollapsed(true)
+  }
+
+  // Roll the project back to the state of a specific assistant reply
+  const handleRollback = async (messageId: string) => {
+    if (rollingBack || busy) return
+    if (!window.confirm(t('rollbackConfirm'))) return
+    setRollingBack(messageId)
+    try {
+      const ok = await rollbackToMessage(chatId, messageId)
+      if (ok) window.location.reload()
+    } finally {
+      setRollingBack(null)
+    }
+  }
+
+  // Edit-and-resend a user message: server truncates history from that
+  // message, the client mirrors it and sends the edited text as a new turn.
+  const handleEditSubmit = async () => {
+    if (!editingId || editBusy) return
+    const text = editDraft.trim()
+    if (!text) return
+    setEditBusy(true)
+    try {
+      const idx = messages.findIndex((m) => m.id === editingId)
+      const ok = await truncateChatFromMessage(chatId, editingId)
+      if (!ok) return
+      if (idx >= 0) setMessages(messages.slice(0, idx))
+      setEditingId(null)
+      setEditDraft('')
+      setWasStopped(false)
+      sendMessage({ text })
+    } finally {
+      setEditBusy(false)
+    }
+  }
+
   const handleDesignChoice = (choice: string) => {
     sendMessage({ text: choice })
   }
@@ -464,67 +572,171 @@ export function ChatView({
       >
         <div className="flex-1 overflow-y-auto">
           <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-8">
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-              >
+            {messages.map((message) => {
+              const isUser = message.role === 'user'
+              const isEditing = editingId === message.id
+              return (
                 <div
-                  className={`max-w-[85%] text-sm leading-relaxed whitespace-pre-wrap ${
-                    message.role === 'user'
-                      ? 'rounded-2xl rounded-br-md bg-foreground text-background px-4 py-2.5'
-                      : 'text-foreground'
-                  }`}
+                  key={message.id}
+                  className={`group flex ${isUser ? 'justify-end' : 'justify-start'}`}
                 >
-                  {message.parts.map((part, index) =>
-                    part.type === 'text' ? (
-                      <MessageText
-                        key={index}
-                        text={part.text}
-                        label={t('previewUpdated')}
-                      />
-                    ) : null,
-                  )}
-                  {/* Per-reply work summary (v0-style): duration · files · lines */}
-                  {message.role === 'assistant' &&
-                    (() => {
-                      const text = message.parts
-                        .filter((p) => p.type === 'text')
-                        .map((p) => (p as { text: string }).text)
-                        .join('\n')
-                      const { files, lines } = messageWorkStats(text)
-                      const secs = workDurations.get(message.id)
-                      const isStreamingThis =
-                        busy && message.id === messages[messages.length - 1]?.id
-                      if ((files === 0 && secs === undefined) || isStreamingThis)
-                        return null
-                      const bits: string[] = []
-                      if (secs !== undefined) {
-                        bits.push(
-                          t('doneIn').replace(
-                            '{t}',
-                            secs < 60
-                              ? t('durSec').replace('{s}', String(secs))
-                              : t('durMin')
-                                  .replace('{m}', String(Math.floor(secs / 60)))
-                                  .replace('{s}', String(secs % 60)),
-                          ),
+                  {/* Edit-and-resend (pencil appears on hover) */}
+                  {isUser && !isEditing && !readOnly && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        setEditingId(message.id)
+                        setEditDraft(
+                          message.parts
+                            .filter((p) => p.type === 'text')
+                            .map((p) => (p as { text: string }).text)
+                            .join('\n'),
                         )
-                      }
-                      if (files > 0) {
-                        bits.push(t('filesChanged').replace('{n}', String(files)))
-                        bits.push(t('linesWritten').replace('{n}', String(lines)))
-                      }
-                      return (
-                        <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground/70">
-                          <CheckCircle2 className="size-3.5 shrink-0" />
-                          {bits.join(' · ')}
-                        </p>
-                      )
-                    })()}
+                      }}
+                      aria-label={t('editMessage')}
+                      className="mr-2 mt-1.5 self-start rounded-md p-1.5 text-transparent transition-colors hover:bg-accent hover:!text-foreground group-hover:text-muted-foreground"
+                    >
+                      <Pencil className="size-3.5" />
+                    </button>
+                  )}
+
+                  {isEditing ? (
+                    <div className="flex w-full max-w-[85%] flex-col gap-2">
+                      <textarea
+                        value={editDraft}
+                        autoFocus
+                        rows={3}
+                        onChange={(e) => setEditDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault()
+                            void handleEditSubmit()
+                          }
+                          if (e.key === 'Escape') setEditingId(null)
+                        }}
+                        className="w-full resize-y rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"
+                      />
+                      <div className="flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setEditingId(null)}
+                          className="rounded-md px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          {t('cancel')}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={editBusy || !editDraft.trim()}
+                          onClick={() => void handleEditSubmit()}
+                          className="flex items-center gap-1.5 rounded-md bg-foreground px-2.5 py-1 text-xs font-medium text-background transition-all active:scale-95 disabled:opacity-50"
+                        >
+                          {editBusy && <Loader2 className="size-3 animate-spin" />}
+                          {t('sendEdited')}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      className={`max-w-[85%] text-sm leading-relaxed whitespace-pre-wrap ${
+                        isUser
+                          ? 'rounded-2xl rounded-br-md bg-foreground text-background px-4 py-2.5'
+                          : 'text-foreground'
+                      }`}
+                    >
+                      {message.parts.map((part, index) =>
+                        part.type === 'text' ? (
+                          <MessageText
+                            key={index}
+                            text={part.text}
+                            label={t('previewUpdated')}
+                            onOpenFile={mode === 'ide' ? handleOpenFile : undefined}
+                          />
+                        ) : null,
+                      )}
+                      {/* Per-reply work summary: duration · files · lines · tokens */}
+                      {message.role === 'assistant' &&
+                        (() => {
+                          const text = message.parts
+                            .filter((p) => p.type === 'text')
+                            .map((p) => (p as { text: string }).text)
+                            .join('\n')
+                          const { files, lines } = messageWorkStats(text)
+                          const secs = workDurations.get(message.id)
+                          const meta = message.metadata as
+                            | { totalTokens?: number }
+                            | undefined
+                          const usagePart = (
+                            message.parts as Array<{
+                              type: string
+                              data?: { totalTokens?: number }
+                            }>
+                          ).find((p) => p.type === 'data-usage')
+                          const tokens =
+                            meta?.totalTokens ?? usagePart?.data?.totalTokens
+                          const isStreamingThis =
+                            busy && message.id === messages[messages.length - 1]?.id
+                          if (
+                            (files === 0 && secs === undefined && !tokens) ||
+                            isStreamingThis
+                          )
+                            return null
+                          const bits: string[] = []
+                          if (secs !== undefined) {
+                            bits.push(
+                              t('doneIn').replace(
+                                '{t}',
+                                secs < 60
+                                  ? t('durSec').replace('{s}', String(secs))
+                                  : t('durMin')
+                                      .replace('{m}', String(Math.floor(secs / 60)))
+                                      .replace('{s}', String(secs % 60)),
+                              ),
+                            )
+                          }
+                          if (files > 0) {
+                            bits.push(t('filesChanged').replace('{n}', String(files)))
+                            bits.push(t('linesWritten').replace('{n}', String(lines)))
+                          }
+                          if (tokens) {
+                            bits.push(
+                              t('tokensUsed').replace(
+                                '{n}',
+                                tokens >= 1000
+                                  ? `${(tokens / 1000).toFixed(1)}k`
+                                  : String(tokens),
+                              ),
+                            )
+                          }
+                          return (
+                            <>
+                              <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground/70">
+                                <CheckCircle2 className="size-3.5 shrink-0" />
+                                {bits.join(' · ')}
+                              </p>
+                              {files > 0 && mode === 'ide' && !readOnly && (
+                                <button
+                                  type="button"
+                                  disabled={busy || rollingBack !== null}
+                                  onClick={() => void handleRollback(message.id)}
+                                  className="mt-1.5 flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground transition-all hover:bg-accent hover:text-foreground active:scale-95 disabled:opacity-50"
+                                >
+                                  {rollingBack === message.id ? (
+                                    <Loader2 className="size-3 animate-spin" />
+                                  ) : (
+                                    <History className="size-3" />
+                                  )}
+                                  {t('rollbackToHere')}
+                                </button>
+                              )}
+                            </>
+                          )
+                        })()}
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              )
+            })}
 
             {busy && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground animate-in fade-in duration-300">
@@ -560,10 +772,10 @@ export function ChatView({
               </div>
             )}
 
-            {/* Regenerate the last assistant answer */}
+            {/* Regenerate / continue the last assistant answer */}
             {!busy && !error && messages.length > 0 &&
               messages[messages.length - 1].role === 'assistant' && !designChoices && (
-              <div className="-mt-3 flex">
+              <div className="-mt-3 flex items-center gap-2">
                 <button
                   type="button"
                   onClick={() => regenerate()}
@@ -572,6 +784,32 @@ export function ChatView({
                   <RotateCcw className="size-3" />
                   {t('regenerate')}
                 </button>
+                {wasStopped && !readOnly && (
+                  <button
+                    type="button"
+                    onClick={() => sendMessage({ text: t('continuePrompt') })}
+                    className="flex items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent active:scale-95 transition-all"
+                  >
+                    <Play className="size-3" />
+                    {t('continueGen')}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Model-suggested next steps (chips) */}
+            {nextSteps && !designChoices && !busy && !error && (
+              <div className="flex flex-wrap gap-2 animate-in fade-in slide-in-from-bottom-1 duration-300">
+                {nextSteps.map((step) => (
+                  <button
+                    key={step}
+                    type="button"
+                    onClick={() => sendMessage({ text: step })}
+                    className="rounded-full border border-dashed border-border bg-background px-3.5 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-accent hover:border-ring/40 active:scale-[0.97] transition-all"
+                  >
+                    {step}
+                  </button>
+                ))}
               </div>
             )}
 
@@ -678,7 +916,15 @@ export function ChatView({
               </div>
             )}
             {!readOnly && (
-              <PromptBox onSubmit={handleSubmit} busy={busy} onStop={stop} chatId={chatId} />
+              <PromptBox
+                onSubmit={handleSubmit}
+                busy={busy}
+                onStop={() => {
+                  setWasStopped(true)
+                  void stop()
+                }}
+                chatId={chatId}
+              />
             )}
           </div>
         </div>
@@ -700,6 +946,7 @@ export function ChatView({
             files={ideFiles}
             initialFiles={initialFiles}
             busy={busy}
+            openFileRequest={openFileReq}
             chatCollapsed={chatCollapsed}
             onToggleChat={() => setChatCollapsed((c) => !c)}
             onFixError={(errorText) => {

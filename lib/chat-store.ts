@@ -175,6 +175,28 @@ export async function syncProjectFiles(
 const FILE_BLOCK_SERVER_RE = /```file:([\w./\-]+)\r?\n([\s\S]*?)```/g
 
 /**
+ * Accumulate all ```file: blocks from assistant messages into a path→content
+ * record (later blocks win). Used to rebuild the FS for rollback/edit flows.
+ */
+export function extractFilesFromUiMessages(
+  uiMessages: UIMessage[],
+): Record<string, string> {
+  const files: Record<string, string> = {}
+  for (const m of uiMessages) {
+    if (m.role !== 'assistant') continue
+    for (const part of m.parts ?? []) {
+      if (part.type !== 'text') continue
+      for (const match of (part as { text: string }).text.matchAll(
+        FILE_BLOCK_SERVER_RE,
+      )) {
+        files[match[1]] = match[2]
+      }
+    }
+  }
+  return files
+}
+
+/**
  * Upsert the ```file: blocks emitted in an assistant reply into project_files.
  * Called from the chat stream's onEnd so the DB stays authoritative even if
  * the user closes the tab mid-generation. Never deletes files.
