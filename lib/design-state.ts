@@ -19,8 +19,13 @@ export function deriveDesignState(input: {
   )
 
   if (hasGeneratedFiles) return 'EXISTING'
-  // Any prior assistant turn in a fileless project was the interview question
-  // — the user's current message answers it: generate, never loop.
-  if (alreadyAskedDesign || input.assistantTexts.length > 0) return 'GENERATE_NOW'
+  // The interview question was asked (chips emitted) — the user's message
+  // answers it: generate, never re-ask in a loop.
+  if (alreadyAskedDesign) return 'GENERATE_NOW'
+  // No files and no design question yet — stay in ASK_DESIGN. The prompt
+  // gates the question on intent: a build request triggers the style
+  // question, while greetings/small talk («привет») get a normal reply.
+  // Previously ANY prior assistant turn forced GENERATE_NOW here, so a chat
+  // that started with small talk spawned an unwanted project on message #2.
   return 'ASK_DESIGN'
 }

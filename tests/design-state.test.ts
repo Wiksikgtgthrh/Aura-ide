@@ -17,9 +17,24 @@ describe('deriveDesignState — интервью не зацикливается
     ).toBe('GENERATE_NOW')
   })
 
-  it('ассистент говорил, но без чипов (fileless) → всё равно GENERATE_NOW (нет второго вопроса)', () => {
+  it('ассистент говорил, но без чипов (small talk) → снова ASK_DESIGN, а не принудительная генерация', () => {
+    // Раньше здесь был GENERATE_NOW: после «привет» следующее сообщение
+    // пользователя ОБЯЗАНО было породить проект. Теперь интервью остаётся
+    // невыполненным (чипов не было) — промпт сам решает по намерению.
     expect(
       deriveDesignState({ hasProjectFiles: false, assistantTexts: ['Привет!'] }),
+    ).toBe('ASK_DESIGN')
+  })
+
+  it('чипы были два сообщения назад → всё равно GENERATE_NOW (не переспрашивает)', () => {
+    expect(
+      deriveDesignState({
+        hasProjectFiles: false,
+        assistantTexts: [
+          'Какой стиль?\n<design-choices>А|Б</design-choices>',
+          'Отвечаю на вопрос не по теме.',
+        ],
+      }),
     ).toBe('GENERATE_NOW')
   })
 
