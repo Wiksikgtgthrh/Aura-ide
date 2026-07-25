@@ -1,18 +1,21 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import useSWR from 'swr'
 import {
   Check,
   Copy,
+  Loader2,
   MessagesSquare,
   MoreHorizontal,
   Pencil,
   Plus,
   Search,
+  Star,
   Trash2,
+  UsersRound,
 } from 'lucide-react'
 import {
   getProjects,
@@ -20,7 +23,20 @@ import {
   deleteProject,
   type ProjectItem,
 } from '@/app/actions/projects'
-import { getChats } from '@/app/actions/chats'
+import {
+  getChats,
+  renameChat,
+  deleteChat,
+  duplicateChat,
+  toggleFavoriteChat,
+} from '@/app/actions/chats'
+import { getTeams, type TeamItem } from '@/app/actions/teams/crud'
+import {
+  getChatTeamShares,
+  shareChatWithTeam,
+  revokeChatTeamShare,
+  type ChatTeamShare,
+} from '@/app/actions/chat-team-share'
 import type { ChatListItem } from '@/lib/chat-store'
 import { useLanguage } from '@/lib/language'
 import dynamic from 'next/dynamic'
@@ -172,6 +188,105 @@ function ProjectCard({
   )
 }
 
+/** Диалог «Команда»: выдать командам доступ к чат-проекту с уровнем. */
+function TeamShareDialog({
+  chat,
+  onClose,
+}: {
+  chat: { id: string; title: string }
+  onClose: () => void
+}) {
+  const { data: teams } = useSWR<TeamItem[] | null>('teams', () => getTeams(), {
+    revalidateOnFocus: false,
+    dedupingInterval: 60_000,
+  })
+  const [shares, setShares] = useState<ChatTeamShare[] | null>(null)
+  const [busyTeam, setBusyTeam] = useState<string | null>(null)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    void getChatTeamShares(chat.id).then(setShares)
+  }, [chat.id])
+
+  const levelOf = (teamId: string) =>
+    shares?.find((sh) => sh.teamId === teamId)?.accessLevel ?? 'none'
+
+  const setLevel = async (teamId: string, level: string) => {
+    setBusyTeam(teamId)
+    setError('')
+    try {
+      if (level === 'none') {
+        await revokeChatTeamShare(chat.id, teamId)
+      } else {
+        const res = await shareChatWithTeam(chat.id, teamId, level as 'read' | 'edit' | 'admin')
+        if (!res.ok) setError(res.error ?? 'Ошибка')
+      }
+      setShares(await getChatTeamShares(chat.id))
+    } finally {
+      setBusyTeam(null)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-lg font-semibold">
+            <UsersRound className="size-4 text-primary" />
+            Доступ команды
+          </DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground text-pretty">
+          Проект «{chat.title}». Уровень доступа ограничивается ролью участника в
+          команде: например, роль «Viewer» видит проект только для чтения даже при
+          уровне «Редактирование».
+        </p>
+        {!teams ? (
+          <div className="flex justify-center py-6">
+            <Loader2 className="size-4 animate-spin text-muted-foreground" />
+          </div>
+        ) : teams.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
+            У вас пока нет команд — создайте её на странице «Команда», затем
+            вернитесь сюда.
+          </p>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {teams.map((team) => (
+              <div
+                key={team.id}
+                className="flex items-center gap-3 rounded-lg border border-border px-3 py-2"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-foreground">{team.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    Участников: {team.memberCount}
+                  </p>
+                </div>
+                {busyTeam === team.id && (
+                  <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+                )}
+                <select
+                  value={levelOf(team.id)}
+                  disabled={busyTeam !== null}
+                  onChange={(e) => void setLevel(team.id, e.target.value)}
+                  className="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:ring-1 focus:ring-ring"
+                >
+                  <option value="none">Нет доступа</option>
+                  <option value="read">Чтение</option>
+                  <option value="edit">Редактирование</option>
+                  <option value="admin">Админ</option>
+                </select>
+              </div>
+            ))}
+          </div>
+        )}
+        {error && <p className="text-xs text-destructive">{error}</p>}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export function ProjectsContent({
   initialProjects,
   initialChats,
@@ -185,6 +300,45 @@ export function ProjectsContent({
   const [chooserOpen, setChooserOpen] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [githubOpen, setGithubOpen] = useState(false)
+  const router = useRouter()
+  // Действия над чат-проектами: переименование / удаление / команда
+  const [renameTarget, setRenameTarget] = useState<{ id: string; title: string } | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null)
+  const [teamTarget, setTeamTarget] = useState<{ id: string; title: string } | null>(null)
+  const [cardBusy, setCardBusy] = useState<string | null>(null)
+  const commitChatRename = async () => {
+    if (!renameTarget) return
+    const title = renameDraft.trim()
+    setRenameTarget(null)
+    if (!title || title === renameTarget.title) return
+    await renameChat(renameTarget.id, title)
+    await mutateChats()
+  }
+  const commitChatDelete = async () => {
+    if (!deleteTarget) return
+    const id = deleteTarget.id
+    setDeleteTarget(null)
+    await mutateChats((prev) => (prev ?? []).filter((c) => c.id !== id), { revalidate: false })
+    await deleteChat(id)
+    await mutateChats()
+  }
+  const handleDuplicate = async (id: string) => {
+    if (cardBusy) return
+    setCardBusy(id)
+    const newId = await duplicateChat(id)
+    setCardBusy(null)
+    await mutateChats()
+    if (newId) router.push(`/chat/${newId}`)
+  }
+  const handleFavorite = async (id: string, favorite: boolean) => {
+    await mutateChats(
+      (prev) => (prev ?? []).map((c) => (c.id === id ? { ...c, favorite } : c)),
+      { revalidate: false },
+    )
+    await toggleFavoriteChat(id, favorite)
+    await mutateChats()
+  }
 
   const { data: projects, mutate: mutateProjects } = useSWR(
     'projects',
@@ -195,7 +349,7 @@ export function ProjectsContent({
       revalidateOnFocus: false,
     },
   )
-  const { data: chats } = useSWR('chats', () => getChats(), {
+  const { data: chats, mutate: mutateChats } = useSWR('chats', () => getChats(), {
     fallbackData: initialChats,
     revalidateOnMount: false,
     revalidateOnFocus: false,
@@ -287,10 +441,15 @@ export function ProjectsContent({
         ) : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {filteredChats.map((chat, i) => (
-              <Link
+              <div
                 key={chat.id}
-                href={`/chat/${chat.id}`}
-                className="group flex flex-col gap-2.5 rounded-xl border border-border bg-card p-4 transition-all hover:border-primary/40 hover:shadow-sm animate-in fade-in slide-in-from-bottom-1 duration-300"
+                role="link"
+                tabIndex={0}
+                onClick={() => router.push(`/chat/${chat.id}`)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') router.push(`/chat/${chat.id}`)
+                }}
+                className="group flex cursor-pointer flex-col gap-2.5 rounded-xl border border-border bg-card p-4 transition-all hover:border-primary/40 hover:shadow-sm animate-in fade-in slide-in-from-bottom-1 duration-300"
                 style={{ animationDelay: `${Math.min(i, 12) * 30}ms`, animationFillMode: 'backwards' }}
               >
                 <div className="flex items-center gap-3">
@@ -303,9 +462,67 @@ export function ProjectsContent({
                     </p>
                     <p className="text-xs text-muted-foreground">{relativeTime(chat.updatedAt)}</p>
                   </div>
-                  {chat.favorite && <span className="shrink-0 text-amber-500">★</span>}
+                  {chat.favorite && <Star className="size-3.5 shrink-0 fill-amber-400 text-amber-400" />}
+                  {cardBusy === chat.id ? (
+                    <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
+                  ) : (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger
+                        aria-label="Действия с проектом"
+                        onClick={(e) => e.stopPropagation()}
+                        className="shrink-0 rounded-md p-1.5 text-muted-foreground opacity-0 transition-all hover:bg-accent hover:text-foreground group-hover:opacity-100 data-[state=open]:bg-accent data-[state=open]:opacity-100"
+                      >
+                        <MoreHorizontal className="size-4" />
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent
+                        align="end"
+                        className="w-52"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <DropdownMenuItem
+                          className="gap-2.5"
+                          onClick={() => {
+                            setRenameDraft(chat.title)
+                            setRenameTarget({ id: chat.id, title: chat.title })
+                          }}
+                        >
+                          <Pencil className="size-4" />
+                          Переименовать
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          className="gap-2.5"
+                          onClick={() => void handleFavorite(chat.id, !chat.favorite)}
+                        >
+                          <Star className={`size-4 ${chat.favorite ? 'fill-amber-400 text-amber-400' : ''}`} />
+                          {chat.favorite ? 'Убрать из избранного' : 'В избранное'}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          className="gap-2.5"
+                          onClick={() => void handleDuplicate(chat.id)}
+                        >
+                          <Copy className="size-4" />
+                          Дублировать
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          className="gap-2.5"
+                          onClick={() => setTeamTarget({ id: chat.id, title: chat.title })}
+                        >
+                          <UsersRound className="size-4" />
+                          Доступ команды…
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          className="gap-2.5"
+                          variant="destructive"
+                          onClick={() => setDeleteTarget({ id: chat.id, title: chat.title })}
+                        >
+                          <Trash2 className="size-4" />
+                          Удалить
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
                 </div>
-              </Link>
+              </div>
             ))}
           </div>
         )}
@@ -375,6 +592,79 @@ export function ProjectsContent({
         onCreated={() => mutateProjects()}
       />
       <GithubIconImportDialog open={githubOpen} onOpenChange={setGithubOpen} />
+
+      {/* Переименование чат-проекта */}
+      {renameTarget && (
+        <Dialog open onOpenChange={(open) => !open && setRenameTarget(null)}>
+          <DialogContent className="sm:max-w-sm">
+            <DialogHeader>
+              <DialogTitle className="text-lg font-semibold">Переименовать проект</DialogTitle>
+            </DialogHeader>
+            <input
+              value={renameDraft}
+              autoFocus
+              maxLength={100}
+              onChange={(e) => setRenameDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void commitChatRename()
+                if (e.key === 'Escape') setRenameTarget(null)
+              }}
+              className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRenameTarget(null)}
+                className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground"
+              >
+                {t('cancel')}
+              </button>
+              <button
+                type="button"
+                disabled={!renameDraft.trim()}
+                onClick={() => void commitChatRename()}
+                className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                Сохранить
+              </button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Удаление чат-проекта (с подтверждением) */}
+      {deleteTarget && (
+        <Dialog open onOpenChange={(open) => !open && setDeleteTarget(null)}>
+          <DialogContent className="sm:max-w-sm">
+            <DialogHeader>
+              <DialogTitle className="text-lg font-semibold">Удалить проект?</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground text-pretty">
+              «{deleteTarget.title}» будет удалён вместе с сообщениями, файлами и
+              историей версий. Это действие необратимо.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground"
+              >
+                {t('cancel')}
+              </button>
+              <button
+                type="button"
+                onClick={() => void commitChatDelete()}
+                className="rounded-md bg-destructive px-3 py-1.5 text-sm font-medium text-white hover:bg-destructive/90"
+              >
+                Удалить
+              </button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Командный доступ к чат-проекту */}
+      {teamTarget && <TeamShareDialog chat={teamTarget} onClose={() => setTeamTarget(null)} />}
     </div>
   )
 }
