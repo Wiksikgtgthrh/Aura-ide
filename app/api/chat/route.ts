@@ -12,8 +12,9 @@ import { createOpenAI } from '@ai-sdk/openai'
 import { revalidateTag } from 'next/cache'
 import { db } from '@/lib/db'
 import { getSession } from '@/lib/session'
-import { apiKeys, chats, preferences } from '@/lib/db/schema'
-import { decryptSecret } from '@/lib/crypto'
+import { apiKeys, chats, preferences, platformApiKeys, userBalance } from '@/lib/db/schema'
+import { decryptSecret, isEncrypted } from '@/lib/crypto'
+import { AURA_MODEL_MAP, AURA_MODELS, pickPlanKeyForTier } from '@/lib/aura-models'
 import { getChatAccess } from '@/lib/chat-access'
 import { getModeration } from '@/lib/admin'
 import {
@@ -34,13 +35,8 @@ import { and, eq } from 'drizzle-orm'
 
 export const maxDuration = 60
 
-// Aura model ids -> AI Gateway model strings
-const AURA_MODEL_MAP: Record<string, string> = {
-  'aura-mini': 'google/gemini-2.5-flash-lite',
-  'aura-pro': 'google/gemini-2.5-flash',
-  'aura-max': 'anthropic/claude-sonnet-4.5',
-  'aura-max-fast': 'anthropic/claude-haiku-4.5',
-}
+// AURA_MODEL_MAP / AURA_MODELS живут в lib/aura-models.ts — общие с
+// селектором моделей и подсказками «что за апишка внутри тира».
 
 // ---- Provider error → human-readable chat message --------------------------
 
@@ -264,12 +260,89 @@ export async function POST(req: Request) {
     return { model: openai.chat(row.modelId || 'gpt-4o-mini'), keyId: row.id, modelName: row.modelId || 'gpt-4o-mini' }
   }
 
-  // Resolve model: explicit user key > built-in Aura (Gateway) > first user key fallback.
+  // Helper: пользовательский план (с учётом истечения) — для ключей тарифа.
+  async function getUserPlanKey(): Promise<string> {
+    try {
+      const [row] = await db
+        .select({ plan: userBalance.plan, planExpiresAt: userBalance.planExpiresAt })
+        .from(userBalance)
+        .where(eq(userBalance.userId, userId))
+        .limit(1)
+      if (!row) return 'free'
+      if (row.planExpiresAt && row.planExpiresAt.getTime() < Date.now()) return 'free'
+      return row.plan || 'free'
+    } catch {
+      return 'free'
+    }
+  }
+
+  // Helper: модель тира Aura из API-ключей ТАРИФА пользователя.
+  // Метка ключа сопоставляется тиру («Aura Max 2» → aura-max), invalid-ключи
+  // пропускаются, из пула берётся случайный. null → фолбэк на Gateway.
+  async function resolvePlanKeyModel(tierId: string, planKey: string) {
+    type PlanKeyRow = {
+      label: string
+      key: string
+      baseUrl: string
+      modelId: string
+      status?: string | null
+    }
+    let rows: PlanKeyRow[] = []
+    try {
+      rows = await db
+        .select({
+          label: platformApiKeys.label,
+          key: platformApiKeys.key,
+          baseUrl: platformApiKeys.baseUrl,
+          modelId: platformApiKeys.modelId,
+          status: platformApiKeys.status,
+        })
+        .from(platformApiKeys)
+        .where(eq(platformApiKeys.planKey, planKey))
+    } catch {
+      // Колонки status ещё нет (не запущен pnpm migrate:admin) — без неё.
+      try {
+        rows = await db
+          .select({
+            label: platformApiKeys.label,
+            key: platformApiKeys.key,
+            baseUrl: platformApiKeys.baseUrl,
+            modelId: platformApiKeys.modelId,
+          })
+          .from(platformApiKeys)
+          .where(eq(platformApiKeys.planKey, planKey))
+      } catch {
+        return null // таблицы нет вовсе
+      }
+    }
+    const picked = pickPlanKeyForTier(rows, tierId)
+    if (!picked) return null
+    if (picked.baseUrl && !(await isSafeFetchUrl(picked.baseUrl))) return null
+    const openai = createOpenAI({
+      apiKey: isEncrypted(picked.key) ? decryptSecret(picked.key) : picked.key,
+      baseURL: picked.baseUrl || undefined,
+    })
+    const tierName = AURA_MODELS.find((m) => m.id === tierId)?.name ?? tierId
+    return {
+      model: openai.chat(picked.modelId || 'gpt-4o-mini'),
+      modelName: `${tierName} (${picked.modelId})`,
+    }
+  }
+
+  // Resolve model:
+  //   явный ключ юзера (api-N) > явный тир Aura (ключ тарифа > Gateway)
+  //   > фолбэк без выбора: первый ключ юзера > ключ тарифа aura-max > Gateway.
+  // ВАЖНО: явный выбор тира Aura больше НЕ подменяется первым ключом юзера.
   // usedApiKeyId tracks WHOSE credit is burned: a number = the account's own
-  // key (never rate-limited), null = built-in Gateway model (daily limits).
+  // key (never rate-limited), null = платформенная модель (daily limits).
   let model: Parameters<typeof streamText>[0]['model'] | null = null
   let usedApiKeyId: number | null = null
   let usedModelName = 'unknown'
+  // Ключ ПЛАТНОГО тарифа обходит дневной лимит встроенных моделей: за него
+  // платит владелец платформы осознанно (free-тариф и гости лимитируются).
+  let bypassDailyLimit = false
+
+  const userPlan = await getUserPlanKey()
 
   if (modelId?.startsWith('api-')) {
     // Explicit user key selected
@@ -282,28 +355,43 @@ export async function POST(req: Request) {
         usedModelName = resolved.modelName
       }
     }
+  } else if (modelId && AURA_MODEL_MAP[modelId]) {
+    // Явно выбран тир Aura: сперва ключи тарифа пользователя.
+    const planResolved = await resolvePlanKeyModel(modelId, userPlan)
+    if (planResolved) {
+      model = planResolved.model
+      usedModelName = planResolved.modelName
+      bypassDailyLimit = userPlan !== 'free'
+    } else {
+      model = AURA_MODEL_MAP[modelId]
+      usedModelName = AURA_MODEL_MAP[modelId]
+    }
   }
 
   if (!model) {
-    // Try to use a user key first (avoids Gateway billing requirement)
+    // Выбора нет (или выбранный ключ удалён): первый ключ юзера…
     const resolved = await getFirstUserKeyModel()
     if (resolved) {
       model = resolved.model
       usedApiKeyId = resolved.keyId
       usedModelName = resolved.modelName
     } else {
-      // Fall back to AI Gateway built-in models
-      const gatewayModelId = (modelId && AURA_MODEL_MAP[modelId])
-        ? AURA_MODEL_MAP[modelId]
-        : AURA_MODEL_MAP['aura-max']
-      model = gatewayModelId
-      usedModelName = gatewayModelId
+      // …иначе aura-max: ключ тарифа, затем Gateway.
+      const planResolved = await resolvePlanKeyModel('aura-max', userPlan)
+      if (planResolved) {
+        model = planResolved.model
+        usedModelName = planResolved.modelName
+        bypassDailyLimit = userPlan !== 'free'
+      } else {
+        model = AURA_MODEL_MAP['aura-max']
+        usedModelName = AURA_MODEL_MAP['aura-max']
+      }
     }
   }
 
   // Daily limit — ONLY for built-in Gateway models. Requests on the account's
   // own key are free for the platform and never limited.
-  if (usedApiKeyId === null) {
+  if (usedApiKeyId === null && !bypassDailyLimit) {
     const isAnonymous =
       (session.user as { isAnonymous?: boolean | null }).isAnonymous === true
     const check = await checkDailyBuiltinLimit(userId, isAnonymous)

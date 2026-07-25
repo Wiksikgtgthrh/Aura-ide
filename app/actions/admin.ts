@@ -454,11 +454,38 @@ export type AdminPlanKey = {
 export async function listPlanApiKeys(planKey: string): Promise<AdminPlanKey[] | null> {
   const actor = await requireAdmin('admin')
   if (!actor) return null
-  const rows = await db
-    .select()
-    .from(platformApiKeys)
-    .where(eq(platformApiKeys.planKey, planKey))
-    .orderBy(desc(platformApiKeys.createdAt))
+  type Row = {
+    id: string
+    planKey: string
+    label: string
+    key: string
+    baseUrl: string
+    modelId: string
+    status?: string | null
+    ping?: number | null
+  }
+  let rows: Row[]
+  try {
+    rows = await db
+      .select()
+      .from(platformApiKeys)
+      .where(eq(platformApiKeys.planKey, planKey))
+      .orderBy(desc(platformApiKeys.createdAt))
+  } catch {
+    // Колонок status/ping ещё нет (не запущен pnpm migrate:admin) —
+    // выбираем базовый набор, чтобы вкладка не ломалась.
+    rows = await db
+      .select({
+        id: platformApiKeys.id,
+        planKey: platformApiKeys.planKey,
+        label: platformApiKeys.label,
+        key: platformApiKeys.key,
+        baseUrl: platformApiKeys.baseUrl,
+        modelId: platformApiKeys.modelId,
+      })
+      .from(platformApiKeys)
+      .where(eq(platformApiKeys.planKey, planKey))
+  }
   return rows.map((r) => ({
     id: r.id,
     planKey: r.planKey,
@@ -546,26 +573,39 @@ export async function importPlanKeysWithModelProbe(input: {
     keys.map(async (rawKey, index) => {
       const probe = await findWorkingModel(rawKey, baseUrl, modelsToProbe)
       const label = keys.length > 1 ? `${baseLabel} ${index + 1}` : baseLabel
+      const base = {
+        planKey,
+        label,
+        key: encryptSecret(rawKey),
+        modelId: probe.workingModel ?? modelsToProbe[0],
+        baseUrl,
+      }
+      let saved = false
+      let saveError: string | null = null
       try {
         await db.insert(platformApiKeys).values({
-          planKey,
-          label,
-          key: encryptSecret(rawKey),
-          modelId: probe.workingModel ?? modelsToProbe[0],
-          baseUrl,
+          ...base,
           status: probe.workingModel ? 'valid' : 'invalid',
           ping: probe.ping ?? undefined,
         })
-        if (probe.workingModel) created++
-        else failed++
+        saved = true
       } catch {
-        failed++
+        // Колонок status/ping ещё нет (немигрированная БД) — сохраняем без них,
+        // чтобы массовый импорт не «не работал» до pnpm migrate:admin.
+        try {
+          await db.insert(platformApiKeys).values(base)
+          saved = true
+        } catch {
+          saveError = 'не удалось сохранить в БД'
+        }
       }
+      if (saved && probe.workingModel) created++
+      else failed++
       perKey.push({
         label,
         maskedKey: maskKey(rawKey),
-        workingModel: probe.workingModel,
-        failReason: probe.failReason,
+        workingModel: saved ? probe.workingModel : null,
+        failReason: saveError ?? probe.failReason,
       })
     }),
   )

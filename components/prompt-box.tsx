@@ -24,8 +24,9 @@ import type { InstalledPlugin } from '@/app/actions/plugins'
 export type { AttachedFile, PromptBoxSubmitPayload } from '@/components/prompt-box/types'
 import type { AttachedFile, PromptBoxSubmitPayload, SkillId } from '@/components/prompt-box/types'
 
-// localStorage helper — safe for SSR
-function readStoredModel(): { id: string; name: string } {
+// localStorage helper — safe for SSR. null = пользователь ещё НЕ выбирал
+// модель (важно: только тогда можно автоподставить первый ключ).
+function readStoredModelChoice(): { id: string; name: string } | null {
   try {
     const raw = localStorage.getItem('aura-selected-model')
     if (raw) {
@@ -33,7 +34,7 @@ function readStoredModel(): { id: string; name: string } {
       if (typeof saved.id === 'string' && typeof saved.name === 'string') return { id: saved.id, name: saved.name }
     }
   } catch { /* ignore */ }
-  return { id: 'aura-max', name: 'Aura Max' }
+  return null
 }
 
 export function PromptBox({
@@ -77,7 +78,13 @@ export function PromptBox({
   const [activeSkills, setActiveSkills] = useState<Set<SkillId>>(new Set())
   const [autoPermissions, setAutoPermissions] = useState<'ask' | 'allow-all'>(() => (prefs?.autoPermissions as 'ask' | 'allow-all') ?? 'ask')
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
-  const [model, setModel] = useState<{ id: string; name: string }>(readStoredModel)
+  // hasModelChoice: выбирал ли пользователь модель хоть раз (localStorage).
+  const hasModelChoice = useRef(false)
+  const [model, setModel] = useState<{ id: string; name: string }>(() => {
+    const stored = readStoredModelChoice()
+    if (stored) hasModelChoice.current = true
+    return stored ?? { id: 'aura-max', name: 'Aura Max' }
+  })
   const [newFolderName, setNewFolderName] = useState('')
   const [attachedProjectId, setAttachedProjectId] = useState<number | null>(null)
 
@@ -90,15 +97,27 @@ export function PromptBox({
   const fileRef = useRef<HTMLInputElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
 
-  // If user has API keys and current model is a built-in Aura model (no user preference stored),
-  // automatically switch to the first user key as the default.
+  // Синхронизация выбранной модели со списком ключей:
+  //  1) выбранный ключ удалён → сбрасываем на первый живой ключ или Aura Max
+  //     (фикс «названия прошлого ключа на главной, хотя ключей нет»);
+  //  2) ключ переименован → обновляем подпись;
+  //  3) автоподстановка первого ключа — ТОЛЬКО если пользователь ещё ни разу
+  //     не выбирал модель (иначе явный выбор тира Aura затирался при загрузке).
   useEffect(() => {
-    if (!apiKeys || apiKeys.length === 0) return
-    const firstKey = apiKeys[0]
-    const firstKeyModel = { id: `api-${firstKey.id}`, name: firstKey.name }
-    // Only override if still on a built-in Aura model — don't override an explicit user choice
-    if (model.id.startsWith('aura-')) {
-      changeModel(firstKeyModel)
+    if (!apiKeys) return
+    if (model.id.startsWith('api-')) {
+      const found = apiKeys.find((k) => `api-${k.id}` === model.id)
+      if (!found) {
+        const first = apiKeys[0]
+        changeModel(first ? { id: `api-${first.id}`, name: first.name } : { id: 'aura-max', name: 'Aura Max' })
+      } else if (found.name !== model.name) {
+        changeModel({ id: model.id, name: found.name })
+      }
+      return
+    }
+    if (!hasModelChoice.current && model.id.startsWith('aura-') && apiKeys.length > 0) {
+      const first = apiKeys[0]
+      changeModel({ id: `api-${first.id}`, name: first.name })
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiKeys])
@@ -107,6 +126,7 @@ export function PromptBox({
   const syncedAutoPermissions = (prefs?.autoPermissions as 'ask' | 'allow-all') ?? autoPermissions
 
   const changeModel = (m: { id: string; name: string }) => {
+    hasModelChoice.current = true
     setModel(m)
     try { localStorage.setItem('aura-selected-model', JSON.stringify(m)) } catch { /* ignore */ }
   }

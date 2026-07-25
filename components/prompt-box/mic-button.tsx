@@ -89,7 +89,12 @@ export function MicButton({
       } else if (event.error === 'no-speech') {
         setMicError('Речь не распознана, попробуйте ещё раз')
       } else if (event.error === 'network') {
-        setMicError('Ошибка сети сервиса распознавания')
+        // Web Speech API распознаёт через облако браузера: в Chrome это
+        // серверы Google — если они недоступны (блокировки/офлайн), браузер
+        // кидает именно 'network'. Локально это не чинится кодом — подскажем.
+        setMicError(
+          'Сервис распознавания браузера недоступен. В Chrome он работает через серверы Google — попробуйте Яндекс.Браузер, включите VPN или проверьте интернет.',
+        )
       } else if (event.error) {
         setMicError(`Ошибка: ${event.error}`)
       }
@@ -119,16 +124,16 @@ export function MicButton({
         disabled={disabled}
         className={`size-8 flex items-center justify-center rounded-lg transition-all duration-300 active:scale-95 relative overflow-visible ${
           listening
-            ? 'bg-destructive text-destructive-foreground shadow-lg shadow-destructive/30'
+            ? 'bg-primary text-primary-foreground shadow-lg shadow-primary/40 ring-2 ring-primary/30'
             : 'bg-primary text-primary-foreground hover:opacity-90 hover:scale-105'
         }`}
       >
         {listening ? (
           <>
-            {/* Soft breathing rings */}
-            <span className="mic-breathe absolute inset-0 rounded-lg bg-destructive/40 pointer-events-none" />
+            {/* Soft breathing rings — в фирменном цвете, не красные */}
+            <span className="mic-breathe absolute inset-0 rounded-lg bg-primary/40 pointer-events-none" />
             <span
-              className="mic-breathe absolute inset-0 rounded-lg bg-destructive/25 pointer-events-none"
+              className="mic-breathe absolute inset-0 rounded-lg bg-primary/25 pointer-events-none"
               style={{ animationDelay: '0.8s' }}
             />
             {/* Live equalizer bars */}

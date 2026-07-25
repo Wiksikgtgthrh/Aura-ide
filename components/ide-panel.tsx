@@ -403,6 +403,21 @@ const TERM_LEVEL_STYLES: Record<PreviewConsoleLevel, string> = {
   result: 'text-violet-600 dark:text-violet-400',
 }
 
+/**
+ * Мобильный режим превью: аккуратная «карточка-телефон» — светлая рамка в
+ * цветах темы, мягкая тень, скругления (вместо мультяшного чёрного корпуса
+ * с чёлкой). Используется и для srcDoc-превью, и для Live dev-сервера.
+ */
+function PhoneFrame({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="my-4 flex h-[94%] max-h-[840px] w-[390px] max-w-[calc(100%-2rem)] shrink-0 flex-col overflow-hidden rounded-[1.75rem] border border-border bg-card p-2 shadow-[0_24px_60px_-24px_rgb(0_0_0/0.35)] animate-in fade-in zoom-in-95 duration-300">
+      <div className="min-h-0 flex-1 overflow-hidden rounded-[1.25rem] border border-border/60 bg-white">
+        {children}
+      </div>
+    </div>
+  )
+}
+
 function formatTs(ts: number): string {
   const d = new Date(ts)
   const p = (n: number, l = 2) => String(n).padStart(l, '0')
@@ -1902,13 +1917,16 @@ export function IdePanel({
                       chrome / dead back-forward buttons, which looked out of
                       place). Just the live status, a working refresh, device
                       toggle and open-in-new-tab. */}
-                  <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border bg-background px-2.5">
+                  <div className="flex h-10 shrink-0 items-center gap-1.5 border-b border-border bg-background px-2.5">
                     <span className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
                       <span className="size-1.5 rounded-full bg-emerald-500" />
                       {t('idePreviewTab')}
                     </span>
 
-                    <span className="flex-1" />
+                    {/* Адресная строка-пилюля (как в браузере) */}
+                    <div className="mx-1.5 flex h-7 min-w-0 flex-1 items-center rounded-lg border border-border bg-muted/40 px-2.5">
+                      <span className="truncate font-mono text-[11px] text-muted-foreground">/</span>
+                    </div>
 
                     <button
                       type="button"
@@ -1924,7 +1942,7 @@ export function IdePanel({
                       onClick={() => setMobile((m) => !m)}
                       title={t('ideMobileToggle')}
                       aria-label={t('ideMobileToggle')}
-                      className={`rounded-md p-1.5 transition-colors ${mobile ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}
+                      className={`rounded-md p-1.5 transition-colors ${mobile ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}
                     >
                       <MonitorSmartphone className="size-4" />
                     </button>
@@ -1947,31 +1965,20 @@ export function IdePanel({
                     </div>
                   )}
 
-                  {/* Preview iframe — mobile mode renders inside a realistic
-                      phone frame (bezel, notch, home bar). */}
-                  <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-background p-0">
+                  {/* Preview iframe — mobile mode renders inside a clean,
+                      theme-aware phone card (see PhoneFrame). */}
+                  <div className={`flex min-h-0 flex-1 items-center justify-center overflow-auto ${mobile ? 'bg-muted/50' : 'bg-background'} p-0`}>
                     {mobile ? (
-                      <div className="my-4 flex h-[92%] max-h-[780px] w-[380px] max-w-full shrink-0 flex-col rounded-[2.5rem] border-[10px] border-zinc-900 bg-zinc-900 shadow-2xl">
-                        {/* Notch */}
-                        <div className="relative flex h-6 shrink-0 items-center justify-center">
-                          <span className="absolute top-1 h-4 w-28 rounded-full bg-zinc-900" />
-                          <span className="absolute top-2 h-1.5 w-12 rounded-full bg-zinc-700" />
-                        </div>
-                        <div className="min-h-0 flex-1 overflow-hidden rounded-[1.6rem] bg-white">
-                          <iframe
-                            key={reloadKey}
-                            ref={iframeRef}
-                            title="IDE Preview"
-                            sandbox="allow-scripts"
-                            srcDoc={srcDoc}
-                            className="h-full w-full border-0"
-                          />
-                        </div>
-                        {/* Home indicator */}
-                        <div className="flex h-4 shrink-0 items-center justify-center">
-                          <span className="h-1 w-24 rounded-full bg-zinc-600" />
-                        </div>
-                      </div>
+                      <PhoneFrame>
+                        <iframe
+                          key={reloadKey}
+                          ref={iframeRef}
+                          title="IDE Preview"
+                          sandbox="allow-scripts"
+                          srcDoc={srcDoc}
+                          className="h-full w-full border-0"
+                        />
+                      </PhoneFrame>
                     ) : (
                       <iframe
                         key={reloadKey}
@@ -2004,6 +2011,15 @@ export function IdePanel({
                       <span className="ml-auto flex items-center gap-1">
                         <button
                           type="button"
+                          onClick={() => setMobile((m) => !m)}
+                          title={t('ideMobileToggle')}
+                          aria-label={t('ideMobileToggle')}
+                          className={`rounded p-1 transition-colors ${mobile ? 'bg-primary/10 text-primary' : 'text-muted-foreground/70 hover:text-foreground'}`}
+                        >
+                          <MonitorSmartphone className="size-3.5" />
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => setLiveReloadKey((k) => k + 1)}
                           disabled={liveState !== 'on'}
                           title={t('ideLiveReload')}
@@ -2020,14 +2036,25 @@ export function IdePanel({
                         </button>
                       </span>
                     </div>
-                    <div className="relative min-h-0 flex-1 bg-background">
+                    <div className={`relative min-h-0 flex-1 ${mobile && liveState === 'on' && liveUrl ? 'flex items-center justify-center overflow-auto bg-muted/50' : 'bg-background'}`}>
                       {liveState === 'on' && liveUrl ? (
-                        <iframe
-                          key={liveReloadKey}
-                          title="Live preview"
-                          src={liveUrl}
-                          className="h-full w-full border-0"
-                        />
+                        mobile ? (
+                          <PhoneFrame>
+                            <iframe
+                              key={liveReloadKey}
+                              title="Live preview"
+                              src={liveUrl}
+                              className="h-full w-full border-0"
+                            />
+                          </PhoneFrame>
+                        ) : (
+                          <iframe
+                            key={liveReloadKey}
+                            title="Live preview"
+                            src={liveUrl}
+                            className="h-full w-full border-0"
+                          />
+                        )
                       ) : (
                         <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-muted-foreground">
                           {liveState === 'starting' ? (

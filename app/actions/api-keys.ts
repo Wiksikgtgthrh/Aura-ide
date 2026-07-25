@@ -340,6 +340,55 @@ export async function updateApiKey(
 }
 
 /**
+ * Список моделей, доступных ключу, — GET {baseUrl}/models у провайдера.
+ * Нужен для смены модели прямо из селектора: один ключ (напр. OpenRouter)
+ * часто поддерживает десятки моделей, а в apiKeys хранится лишь одна.
+ */
+export async function listKeyModels(id: number): Promise<string[] | null> {
+  const userId = await getUserIdOrNull()
+  if (!userId) return null
+  const [row] = await db
+    .select({ key: apiKeys.key, baseUrl: apiKeys.baseUrl })
+    .from(apiKeys)
+    .where(and(eq(apiKeys.id, id), eq(apiKeys.userId, userId)))
+    .limit(1)
+  if (!row) return null
+
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 12000)
+  try {
+    const safe = await assertSafeFetchUrl(normalizeBaseUrl(row.baseUrl))
+    const res = await fetch(`${safe}/models`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${decryptSecret(row.key)}`,
+        'Content-Type': 'application/json',
+      },
+      signal: controller.signal,
+    })
+    if (!res.ok) return []
+    const parsed = (await res.json()) as {
+      data?: { id?: string }[]
+      models?: { id?: string; name?: string }[]
+    }
+    const raw = Array.isArray(parsed.data)
+      ? parsed.data
+      : Array.isArray(parsed.models)
+        ? parsed.models
+        : []
+    const ids = raw
+      .map((m) => (typeof m?.id === 'string' ? m.id : ''))
+      .filter(Boolean)
+    // Уникальные, по алфавиту, с запасом на большие каталоги (OpenRouter).
+    return Array.from(new Set(ids)).sort((a, b) => a.localeCompare(b)).slice(0, 300)
+  } catch {
+    return []
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+/**
  * Re-verify a stored key and persist the resulting status.
  *
  * Probes the CONFIGURED MODEL with a real 1-token completion — the old
