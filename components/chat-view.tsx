@@ -423,6 +423,12 @@ export function ChatView({
   const { messages, sendMessage, regenerate, status, stop, error, setMessages } = useChat({
     id: chatId,
     messages: initialMessages,
+    // Батчинг обновлений стрима (~12 кадров/с). Без него КАЖДЫЙ чанк дёргал
+    // полный ререндер (парсинг всех файлов, Monaco, дерево) — на длинных
+    // генерациях каскад эффектов переполнял лимит вложенных обновлений React
+    // («Maximum update depth exceeded»), стрим падал, и казалось, что
+    // «контекст не держится». Заодно генерация заметно плавнее.
+    throttle: 80,
     transport: new DefaultChatTransport({
       api: '/api/chat',
       prepareSendMessagesRequest: ({ id, messages }) => ({
@@ -435,6 +441,12 @@ export function ChatView({
       }),
     }),
   })
+
+  // Диагностика обрывов: полный стек ошибки стрима в консоль — по нему видно,
+  // какой компонент/сеттер виноват (для «Maximum update depth» и т.п.).
+  useEffect(() => {
+    if (error) console.error('[aura] chat stream error:', error)
+  }, [error])
 
   // Send the pending first message handed off from the home page.
   useEffect(() => {
@@ -1118,7 +1130,7 @@ export function ChatView({
                         смените модель у ключа (селектор → «Сменить модель ключа…») или выберите другой ключ.
                         {msg && (
                           <span className="mt-1 block font-mono text-[11px] opacity-70">
-                            {msg.slice(0, 160)}
+                            {msg.slice(0, 300)}
                           </span>
                         )}
                       </span>
@@ -1129,7 +1141,7 @@ export function ChatView({
                       {t('chatError')}
                       {msg && (
                         <span className="mt-1 block font-mono text-[11px] opacity-70">
-                          {msg.slice(0, 160)}
+                          {msg.slice(0, 300)}
                         </span>
                       )}
                     </span>
