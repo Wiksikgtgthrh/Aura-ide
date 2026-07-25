@@ -35,6 +35,9 @@ import {
   addPlanApiKey,
   deletePlanApiKey,
   getAuditLog,
+  muteUser,
+  banUser,
+  purgeGuests,
   listAllPlugins,
   upsertPlugin,
   deletePlugin,
@@ -677,6 +680,77 @@ function roleBadge(role: Role) {
   return 'bg-muted text-muted-foreground'
 }
 
+const DURATIONS: { label: string; ms: number | null }[] = [
+  { label: '1 час', ms: 60 * 60_000 },
+  { label: '1 день', ms: 24 * 60 * 60_000 },
+  { label: '7 дней', ms: 7 * 24 * 60 * 60_000 },
+  { label: 'Навсегда', ms: null },
+]
+
+function ModerationControls({
+  userId,
+  status,
+  onDone,
+}: {
+  userId: string
+  status: string
+  onDone: () => Promise<void>
+}) {
+  const [mode, setMode] = useState<'mute' | 'ban' | null>(null)
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const apply = async (ms: number | null) => {
+    setBusy(true)
+    if (mode === 'ban') await banUser(userId, ms, reason)
+    else await muteUser(userId, ms)
+    setBusy(false)
+    setMode(null)
+    setReason('')
+    await onDone()
+  }
+  const lift = async (kind: 'mute' | 'ban') => {
+    setBusy(true)
+    if (kind === 'ban') await banUser(userId, 0)
+    else await muteUser(userId, 0)
+    setBusy(false)
+    await onDone()
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" disabled={busy} onClick={() => setMode(mode === 'mute' ? null : 'mute')} className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground">
+          {status === 'muted' ? 'Изменить мут' : 'Замутить'}
+        </button>
+        {status === 'muted' && (
+          <button type="button" disabled={busy} onClick={() => lift('mute')} className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground">Снять мут</button>
+        )}
+        <button type="button" disabled={busy} onClick={() => setMode(mode === 'ban' ? null : 'ban')} className="rounded-md border border-destructive/40 px-2.5 py-1 text-xs text-destructive hover:bg-destructive/10">
+          {status === 'banned' ? 'Изменить бан' : 'Забанить'}
+        </button>
+        {status === 'banned' && (
+          <button type="button" disabled={busy} onClick={() => lift('ban')} className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground">Разбанить</button>
+        )}
+      </div>
+      {mode && (
+        <div className="flex flex-col gap-2 rounded-md bg-muted/40 p-2">
+          {mode === 'ban' && (
+            <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Причина (необязательно)" className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none" />
+          )}
+          <div className="flex flex-wrap gap-1.5">
+            {DURATIONS.map((d) => (
+              <button key={d.label} type="button" disabled={busy} onClick={() => apply(d.ms)} className={`rounded-md px-2.5 py-1 text-xs ${mode === 'ban' ? 'bg-destructive text-white' : 'bg-primary text-primary-foreground'} disabled:opacity-60`}>
+                {d.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function UsersTab({ isSuperadmin, adminsOnly }: { isSuperadmin: boolean; adminsOnly?: boolean }) {
   const [query, setQuery] = useState('')
   const [rows, setRows] = useState<AdminUserRow[]>([])
@@ -714,24 +788,41 @@ function UsersTab({ isSuperadmin, adminsOnly }: { isSuperadmin: boolean; adminsO
     alert(ok ? 'Письмо для сброса пароля отправлено пользователю.' : 'Не удалось отправить письмо.')
   }
 
+  const purge = async () => {
+    if (!window.confirm('Удалить всех гостей без чатов и проектов? Действие необратимо.')) return
+    const n = await purgeGuests('empty')
+    alert(`Удалено гостей: ${n}`)
+    await load(query)
+  }
+
   return (
     <div className="flex flex-col gap-4">
       {!adminsOnly && (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault()
-            void load(query)
-          }}
-          className="relative"
-        >
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Поиск по имени, тегу или почте…"
-            className="h-10 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"
-          />
-        </form>
+        <div className="flex items-center gap-2">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              void load(query)
+            }}
+            className="relative flex-1"
+          >
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Поиск по имени, тегу или почте…"
+              className="h-10 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"
+            />
+          </form>
+          <button
+            type="button"
+            onClick={purge}
+            title="Удалить гостей без данных"
+            className="h-10 shrink-0 rounded-lg border border-border px-3 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            Очистить гостей
+          </button>
+        </div>
       )}
 
       {loading ? (
@@ -821,6 +912,20 @@ function UsersTab({ isSuperadmin, adminsOnly }: { isSuperadmin: boolean; adminsO
                   <StatCard label="Чаты" value={selected.chats} />
                 </div>
 
+                {/* Moderation status */}
+                {(selected.status === 'banned' || selected.status === 'muted') && (
+                  <div className={`rounded-lg border px-3 py-2 text-xs ${selected.status === 'banned' ? 'border-destructive/40 bg-destructive/10 text-destructive' : 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400'}`}>
+                    {selected.status === 'banned' ? 'Забанен' : 'Мут'}
+                    {(() => {
+                      const u = selected.status === 'banned' ? selected.bannedUntil : selected.mutedUntil
+                      if (!u) return ' (навсегда)'
+                      const d = new Date(u)
+                      return d.getFullYear() >= 9999 ? ' (навсегда)' : ` до ${d.toLocaleString('ru-RU')}`
+                    })()}
+                    {selected.banReason ? ` · ${selected.banReason}` : ''}
+                  </div>
+                )}
+
                 {/* Actions */}
                 <div className="flex flex-col gap-2 border-t border-border pt-3">
                   {!selected.isAnonymous && (
@@ -832,6 +937,20 @@ function UsersTab({ isSuperadmin, adminsOnly }: { isSuperadmin: boolean; adminsO
                       <RefreshCw className="size-4" />
                       Отправить сброс пароля
                     </button>
+                  )}
+
+                  {/* Mute / Ban (admins). Superadmins can't be banned by the action. */}
+                  {selected.role !== 'superadmin' && (
+                    <div className="flex flex-col gap-2 rounded-lg border border-border p-2.5">
+                      <ModerationControls
+                        userId={selected.id}
+                        status={selected.status}
+                        onDone={async () => {
+                          await load(query)
+                          setSelected(await getUserDetail(selected.id))
+                        }}
+                      />
+                    </div>
                   )}
                   {isSuperadmin && !selected.isAnonymous && (
                     <div className="flex items-center gap-2">

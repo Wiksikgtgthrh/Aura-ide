@@ -46,9 +46,13 @@ const sql = neon(process.env.DATABASE_URL)
 async function main() {
   console.log('Running migrate-admin…')
 
-  // 1) Platform role on user (additive).
+  // 1) Platform role + moderation on user (additive).
   await sql`ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "role" text NOT NULL DEFAULT 'user'`
-  console.log('  ✓ user.role')
+  await sql`ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "status" text NOT NULL DEFAULT 'active'`
+  await sql`ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "mutedUntil" timestamp`
+  await sql`ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "bannedUntil" timestamp`
+  await sql`ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "banReason" text NOT NULL DEFAULT ''`
+  console.log('  ✓ user.role/status/moderation')
 
   // 2) Platform settings (key/value).
   await sql`

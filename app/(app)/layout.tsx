@@ -10,7 +10,7 @@ import { getApiKeysForUser, getApiKeysGroupedForUser } from '@/app/actions/api-k
 import { getTeamsForUser } from '@/app/actions/teams'
 import { listChatsForUser } from '@/lib/chat-store'
 import { getSession } from '@/lib/session'
-import { getActor } from '@/lib/admin'
+import { getActor, getModeration } from '@/lib/admin'
 import { NavigationProvider } from '@/lib/navigation-context'
 import { SettingsProvider } from '@/components/settings-context'
 import { AppContentArea, type PreloadedSettingsData, type PreloadedPagesData } from '@/components/app-content-area'
@@ -27,6 +27,11 @@ async function AppShellLoader({
   if (!session?.user) redirect('/sign-in')
 
   const userId = session.user.id
+
+  // Banned users can't use the app. The /banned screen lives OUTSIDE this
+  // group, so this redirect never loops.
+  const mod = await getModeration(userId)
+  if (mod.banned) redirect('/banned')
   const sessionName = session.user.name
   const sessionEmail = session.user.email
   // All data fetches run in parallel — sidebar + settings all in one Promise.all.

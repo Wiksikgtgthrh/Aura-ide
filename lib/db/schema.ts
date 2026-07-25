@@ -26,6 +26,12 @@ export const user = pgTable('user', {
   // Platform role: 'user' | 'admin' | 'superadmin'. Additive column — does NOT
   // affect the better-auth login flow. Managed via the admin panel.
   role: text('role').notNull().default('user'),
+  // Moderation: 'active' | 'muted' | 'banned'. *Until = null means permanent;
+  // a past timestamp means the restriction has expired (auto-lifted on check).
+  status: text('status').notNull().default('active'),
+  mutedUntil: timestamp('mutedUntil'),
+  bannedUntil: timestamp('bannedUntil'),
+  banReason: text('banReason').notNull().default(''),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
   updatedAt: timestamp('updatedAt').notNull().defaultNow(),
 })

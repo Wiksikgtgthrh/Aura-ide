@@ -6,6 +6,59 @@ import { getSession } from '@/lib/session'
 
 export type Role = 'user' | 'admin' | 'superadmin'
 
+export type Moderation = {
+  banned: boolean
+  muted: boolean
+  bannedUntil: string | null
+  mutedUntil: string | null
+  banReason: string
+}
+
+/**
+ * Current user's moderation state (ban/mute), auto-lifting expired
+ * restrictions. Resilient to an unmigrated schema (returns "clean").
+ */
+export async function getModeration(userId: string): Promise<Moderation> {
+  const clean: Moderation = {
+    banned: false,
+    muted: false,
+    bannedUntil: null,
+    mutedUntil: null,
+    banReason: '',
+  }
+  try {
+    const [row] = await db
+      .select({
+        bannedUntil: user.bannedUntil,
+        mutedUntil: user.mutedUntil,
+        banReason: user.banReason,
+      })
+      .from(user)
+      .where(eq(user.id, userId))
+      .limit(1)
+    if (!row) return clean
+    const now = Date.now()
+    // *Until: a stored timestamp far in the future OR a sentinel means active;
+    // we store null=permanent, so treat null bannedUntil with status via a
+    // dedicated flag. Here: banned if bannedUntil is set AND (permanent-marker
+    // or still in the future). We encode permanent as year 9999.
+    const banned = row.bannedUntil ? row.bannedUntil.getTime() > now : false
+    const muted = row.mutedUntil ? row.mutedUntil.getTime() > now : false
+    return {
+      banned,
+      muted,
+      bannedUntil: row.bannedUntil ? row.bannedUntil.toISOString() : null,
+      mutedUntil: row.mutedUntil ? row.mutedUntil.toISOString() : null,
+      banReason: row.banReason ?? '',
+    }
+  } catch {
+    return clean
+  }
+}
+
+/** Sentinel for a permanent restriction (far future). */
+export const PERMANENT_UNTIL = new Date('9999-12-31T23:59:59Z')
+
 /**
  * Owner bootstrap identity. Auto-promotion to superadmin is a ONE-TIME
  * bootstrap: it fires only when (a) the signed-in user matches the owner

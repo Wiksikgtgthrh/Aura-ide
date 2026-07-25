@@ -18,7 +18,7 @@ import {
 import { and, asc, desc, eq, ilike, or, sql } from 'drizzle-orm'
 import { decryptSecret, encryptSecret, isEncrypted } from '@/lib/crypto'
 import { auth } from '@/lib/auth'
-import { requireAdmin, type Role } from '@/lib/admin'
+import { requireAdmin, PERMANENT_UNTIL, type Role } from '@/lib/admin'
 import { dockerContainerStats, type ContainerStat } from '@/lib/terminal'
 import { getLimits, setLimits, type PlatformLimits } from '@/lib/platform-settings'
 
@@ -114,6 +114,10 @@ export async function listUsers(query = ''): Promise<AdminUserRow[]> {
 export type AdminUserDetail = AdminUserRow & {
   projects: number
   chats: number
+  status: string
+  mutedUntil: string | null
+  bannedUntil: string | null
+  banReason: string
   /** Decrypted API keys — SUPERADMIN only (null for regular admins). */
   apiKeys:
     | { id: number; name: string; key: string; modelId: string; baseUrl: string }[]
@@ -134,6 +138,10 @@ export async function getUserDetail(userId: string): Promise<AdminUserDetail | n
       role: user.role,
       plan: userBalance.plan,
       createdAt: user.createdAt,
+      status: user.status,
+      mutedUntil: user.mutedUntil,
+      bannedUntil: user.bannedUntil,
+      banReason: user.banReason,
     })
     .from(user)
     .leftJoin(userBalance, eq(userBalance.userId, user.id))
@@ -181,6 +189,10 @@ export async function getUserDetail(userId: string): Promise<AdminUserDetail | n
     createdAt: row.createdAt.toISOString(),
     projects: projCount?.n ?? 0,
     chats: chatCount?.n ?? 0,
+    status: row.status ?? 'active',
+    mutedUntil: row.mutedUntil ? row.mutedUntil.toISOString() : null,
+    bannedUntil: row.bannedUntil ? row.bannedUntil.toISOString() : null,
+    banReason: row.banReason ?? '',
     apiKeys: keys,
   }
 }
@@ -199,6 +211,73 @@ export async function setUserRole(userId: string, role: Role): Promise<boolean> 
   await db.update(user).set({ role }).where(eq(user.id, userId))
   await audit(actor.id, 'set_role', userId, { role })
   return true
+}
+
+// ---- Moderation: mute / ban / purge guests ---------------------------------
+
+/** durationMs = null → permanent; >0 → temporary; 0 → lift. */
+export async function muteUser(userId: string, durationMs: number | null): Promise<boolean> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return false
+  if (userId === actor.id) return false
+  const until = durationMs === 0 ? null : durationMs == null ? PERMANENT_UNTIL : new Date(Date.now() + durationMs)
+  await db
+    .update(user)
+    .set({ mutedUntil: until, status: until ? 'muted' : 'active' })
+    .where(eq(user.id, userId))
+  await audit(actor.id, until ? 'mute' : 'unmute', userId, { until: until?.toISOString() ?? null })
+  return true
+}
+
+export async function banUser(
+  userId: string,
+  durationMs: number | null,
+  reason = '',
+): Promise<boolean> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return false
+  if (userId === actor.id) return false
+  // Never ban another superadmin.
+  const [t] = await db.select({ role: user.role }).from(user).where(eq(user.id, userId)).limit(1)
+  if (t?.role === 'superadmin') return false
+  const until = durationMs === 0 ? null : durationMs == null ? PERMANENT_UNTIL : new Date(Date.now() + durationMs)
+  await db
+    .update(user)
+    .set({
+      bannedUntil: until,
+      status: until ? 'banned' : 'active',
+      banReason: until ? reason.slice(0, 300) : '',
+    })
+    .where(eq(user.id, userId))
+  await audit(actor.id, until ? 'ban' : 'unban', userId, { until: until?.toISOString() ?? null, reason })
+  return true
+}
+
+/**
+ * Delete guest (anonymous) accounts. mode 'all' removes every guest; 'empty'
+ * removes only guests with no chats and no projects (safe cleanup).
+ */
+export async function purgeGuests(mode: 'all' | 'empty' = 'empty'): Promise<number> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return 0
+  const guests = await db
+    .select({ id: user.id })
+    .from(user)
+    .where(eq(user.isAnonymous, true))
+  let removed = 0
+  for (const g of guests) {
+    if (mode === 'empty') {
+      const [[c], [p]] = await Promise.all([
+        db.select({ n: sql<number>`count(*)::int` }).from(chats).where(eq(chats.userId, g.id)),
+        db.select({ n: sql<number>`count(*)::int` }).from(projects).where(eq(projects.userId, g.id)),
+      ])
+      if ((c?.n ?? 0) > 0 || (p?.n ?? 0) > 0) continue
+    }
+    await db.delete(user).where(eq(user.id, g.id)) // cascades to their data
+    removed++
+  }
+  await audit(actor.id, 'purge_guests', '', { mode, removed })
+  return removed
 }
 
 // ---- Audit log --------------------------------------------------------------

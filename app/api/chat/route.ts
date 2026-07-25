@@ -15,6 +15,7 @@ import { getSession } from '@/lib/session'
 import { apiKeys, chats, preferences } from '@/lib/db/schema'
 import { decryptSecret } from '@/lib/crypto'
 import { getChatAccess } from '@/lib/chat-access'
+import { getModeration } from '@/lib/admin'
 import {
   createCheckpoint,
   loadChatMessagesFresh,
@@ -178,6 +179,24 @@ export async function POST(req: Request) {
 
   // Owner or shared-project member. Viewers can read the chat page but may
   // not generate — only 'owner'/'edit' pass here.
+  // Moderation gate: banned users can't generate at all; muted users are
+  // blocked from sending messages (read still works via the page).
+  const mod = await getModeration(userId)
+  if (mod.banned || mod.muted) {
+    const until = mod.banned ? mod.bannedUntil : mod.mutedUntil
+    const permanent = until ? new Date(until).getFullYear() >= 9999 : true
+    const when = permanent ? '' : ` до ${new Date(until as string).toLocaleString('ru-RU')}`
+    return new Response(
+      JSON.stringify({
+        error: mod.banned ? 'banned' : 'muted',
+        message: mod.banned
+          ? `Ваш аккаунт заблокирован${when}.${mod.banReason ? ` Причина: ${mod.banReason}` : ''}`
+          : `Вы не можете отправлять сообщения${when} (мут).`,
+      }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    )
+  }
+
   const access = await getChatAccess(id, userId)
   if (!access) {
     return new Response('Chat not found', { status: 404 })
