@@ -209,6 +209,15 @@ export function ProjectsContent({
     return projects.filter((p) => p.name.toLowerCase().includes(q))
   }, [projects, query])
 
+  // Проекты пользователя = его чаты-проекты (IDE): раньше страница показывала
+  // только «папки» (таблица projects) и выглядела пустой при куче проектов.
+  const filteredChats = useMemo(() => {
+    if (!chats) return []
+    const q = query.trim().toLowerCase()
+    if (!q) return chats
+    return chats.filter((c) => c.title.toLowerCase().includes(q))
+  }, [chats, query])
+
   const recentChats = chats?.slice(0, 4) ?? []
 
   return (
@@ -237,22 +246,13 @@ export function ProjectsContent({
         </button>
       </div>
 
-      {/* Projects grid */}
-      <section
-        aria-label={t('projects')}
-        className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-3"
-      >
-        {projects && filteredProjects.length === 0 ? (
-          <div className="col-span-full py-16 flex flex-col items-center gap-1">
-            <p className="text-sm font-medium text-foreground">
-              {t('noProjectsFound')}
-            </p>
-            <p className="text-sm text-muted-foreground">
-              {t('blankProjectHelp')}
-            </p>
-          </div>
-        ) : (
-          filteredProjects.map((project) => (
+      {/* Папки-проекты (группы) — секция видна, только когда они есть */}
+      {filteredProjects.length > 0 && (
+        <section
+          aria-label={t('projects')}
+          className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-3"
+        >
+          {filteredProjects.map((project) => (
             <ProjectCard
               key={project.id}
               project={project}
@@ -264,7 +264,50 @@ export function ProjectsContent({
                 )
               }
             />
-          ))
+          ))}
+        </section>
+      )}
+
+      {/* Все проекты-чаты пользователя */}
+      <section aria-label="Все проекты" className="flex flex-col gap-3">
+        {filteredChats.length > 0 && filteredProjects.length > 0 && (
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Все проекты
+          </h2>
+        )}
+        {filteredChats.length === 0 && filteredProjects.length === 0 ? (
+          <div className="py-16 flex flex-col items-center gap-1">
+            <p className="text-sm font-medium text-foreground">
+              {t('noProjectsFound')}
+            </p>
+            <p className="text-sm text-muted-foreground">
+              {t('blankProjectHelp')}
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {filteredChats.map((chat, i) => (
+              <Link
+                key={chat.id}
+                href={`/chat/${chat.id}`}
+                className="group flex flex-col gap-2.5 rounded-xl border border-border bg-card p-4 transition-all hover:border-primary/40 hover:shadow-sm animate-in fade-in slide-in-from-bottom-1 duration-300"
+                style={{ animationDelay: `${Math.min(i, 12) * 30}ms`, animationFillMode: 'backwards' }}
+              >
+                <div className="flex items-center gap-3">
+                  <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-sm font-bold text-primary">
+                    {(chat.title || 'A').slice(0, 1).toUpperCase()}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-foreground group-hover:text-primary transition-colors">
+                      {chat.title}
+                    </p>
+                    <p className="text-xs text-muted-foreground">{relativeTime(chat.updatedAt)}</p>
+                  </div>
+                  {chat.favorite && <span className="shrink-0 text-amber-500">★</span>}
+                </div>
+              </Link>
+            ))}
+          </div>
         )}
       </section>
 

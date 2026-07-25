@@ -29,6 +29,7 @@ import { getLimits } from '@/lib/platform-settings'
 import { checkDailyBuiltinLimit, recordTokenUsage } from '@/lib/limits'
 import { isSafeFetchUrl } from '@/lib/ssrf'
 import { deriveDesignState } from '@/lib/design-state'
+import { buildHistoryDigest } from '@/lib/history-digest'
 import { extractMemoriesFromExchange } from '@/lib/memory-extract'
 import { getActivePluginContext } from '@/app/actions/plugins'
 import { getActiveMcpServers } from '@/app/actions/mcp'
@@ -818,9 +819,17 @@ or <design-choices> — those already render as chips).`
     }
   }
 
+  // Резюме свёрнутой части истории — «контекст не теряется» на длинных чатах
+  // (в модель уходит только хвост из MODEL_HISTORY_WINDOW сообщений).
+  const HISTORY_WINDOW = 24
+  const historyDigest =
+    allMessages.length > HISTORY_WINDOW
+      ? buildHistoryDigest(allMessages.slice(0, allMessages.length - HISTORY_WINDOW))
+      : ''
+
   const finalInstructions = isIde
-    ? `${instructions}\n\nPROJECT STATE: ${stateLabel}${filesContext}`
-    : instructions
+    ? `${instructions}\n\nPROJECT STATE: ${stateLabel}${filesContext}${historyDigest}`
+    : `${instructions}${historyDigest}`
 
   const isFirstExchange = previousMessages.length === 0
   const firstUserText = (enrichedMessage.parts ?? [])
@@ -832,7 +841,7 @@ or <design-choices> — those already render as chips).`
   // Bound the history sent to the model: on long chats the full transcript is
   // needless cost/latency (design state + live files already come from the DB
   // and are injected above). Keep the trailing window + the new message.
-  const MODEL_HISTORY_WINDOW = 24
+  const MODEL_HISTORY_WINDOW = HISTORY_WINDOW
   const windowedMessages =
     allMessages.length > MODEL_HISTORY_WINDOW
       ? allMessages.slice(-MODEL_HISTORY_WINDOW)

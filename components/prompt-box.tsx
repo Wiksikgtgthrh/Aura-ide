@@ -2,7 +2,7 @@
 
 import { useRef, useState, useCallback, useEffect } from 'react'
 import useSWR from 'swr'
-import { ArrowUp, MessageCircle, Square } from 'lucide-react'
+import { ArrowUp, Loader2, MessageCircle, Square, WandSparkles } from 'lucide-react'
 import { ModelSwitcher } from '@/components/model-switcher'
 import { GithubIconImportDialog } from '@/components/github-import-dialog'
 import { InstructionsPopover } from '@/components/instructions-popover'
@@ -13,6 +13,7 @@ import { FileChip } from '@/components/prompt-box/file-chip'
 import { AddContentMenu } from '@/components/prompt-box/add-content-menu'
 import { useLanguage } from '@/lib/language'
 import { getPreferences } from '@/app/actions/preferences'
+import { improvePrompt } from '@/app/actions/prompt-improver'
 import { getApiKeys } from '@/app/actions/api-keys'
 import { getProjects } from '@/app/actions/projects'
 import { getInstalledPlugins } from '@/app/actions/plugins'
@@ -74,6 +75,27 @@ export function PromptBox({
     onPlanModeChange?.(next)
   }
   const [generateImages, setGenerateImages] = useState(true)
+  // «Улучшить промпт»: короткий запрос разворачивается моделью в детальный бриф.
+  const [improving, setImproving] = useState(false)
+  const [improveError, setImproveError] = useState<string | null>(null)
+  const handleImprove = async () => {
+    if (improving || !value.trim()) return
+    setImproving(true)
+    setImproveError(null)
+    try {
+      const res = await improvePrompt(value)
+      if (res.ok) setValue(res.text)
+      else {
+        setImproveError(res.error)
+        setTimeout(() => setImproveError(null), 4000)
+      }
+    } catch {
+      setImproveError('Не удалось улучшить промпт')
+      setTimeout(() => setImproveError(null), 4000)
+    } finally {
+      setImproving(false)
+    }
+  }
   const [activeSkills, setActiveSkills] = useState<Set<SkillId>>(new Set())
   const [autoPermissions, setAutoPermissions] = useState<'ask' | 'allow-all'>(() => (prefs?.autoPermissions as 'ask' | 'allow-all') ?? 'ask')
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
@@ -225,6 +247,12 @@ export function PromptBox({
           className="w-full resize-none bg-transparent px-4 pt-4 pb-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
         />
 
+        {improveError && (
+          <p className="px-4 pb-1 text-xs text-destructive animate-in fade-in duration-200">
+            {improveError}
+          </p>
+        )}
+
         {/* flex-nowrap + min-w-0: в узкой панели чата строка не переносится,
             имя модели обрезается, микрофон/отправка не съезжают. */}
         <div className="flex min-w-0 flex-nowrap items-center gap-1.5 px-3 pb-3">
@@ -281,6 +309,28 @@ export function PromptBox({
             />
             <span className="hidden sm:inline">{t('planMode')}</span>
           </button>
+
+          {/* Улучшить промпт: короткий запрос → детальный бриф */}
+          {value.trim().length > 3 && !busy && (
+            <button
+              type="button"
+              onClick={handleImprove}
+              disabled={improving}
+              title="Улучшить промпт: развернуть запрос в детальный бриф"
+              className={`flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs transition-all duration-300 active:scale-95 ${
+                improving
+                  ? 'border-primary/50 bg-primary/10 text-primary'
+                  : 'border-transparent text-muted-foreground hover:border-border hover:text-foreground'
+              }`}
+            >
+              {improving ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <WandSparkles className="size-3.5" />
+              )}
+              <span className="hidden lg:inline">{improving ? 'Улучшаем…' : 'Улучшить'}</span>
+            </button>
+          )}
 
           {/* «Черновик» (ProjectSwitcher) убран — не нужен и ломал строку
               в узкой панели чата (микрофон съезжал). */}
