@@ -33,7 +33,10 @@ import { getActiveMcpServers } from '@/app/actions/mcp'
 import { getActiveMemoriesForPrompt } from '@/app/actions/memories'
 import { and, eq } from 'drizzle-orm'
 
-export const maxDuration = 60
+// Длинные генерации (много файлов через медленный прокси) не должны
+// обрубаться на минуте: 300s — потолок Fluid Compute; на Hobby Vercel
+// значение автоматически ужмётся до лимита плана, локально не влияет.
+export const maxDuration = 300
 
 // AURA_MODEL_MAP / AURA_MODELS живут в lib/aura-models.ts — общие с
 // селектором моделей и подсказками «что за апишка внутри тира».

@@ -78,11 +78,14 @@ export function ProjectSwitcher() {
         if (!next) setQuery('')
       }}
     >
-      <PopoverTrigger className="flex items-center gap-1 h-8 px-2.5 rounded-md text-sm text-muted-foreground hover:bg-accent hover:text-foreground transition-colors duration-200 data-[popup-open]:bg-accent data-[popup-open]:text-foreground">
+      {/* Чип с рамкой и иконкой — раньше это был серый текст, который
+          сливался с белым фоном («Черновик» выглядел недоделанным). */}
+      <PopoverTrigger className="flex h-8 items-center gap-1.5 rounded-full border border-border bg-muted/40 px-3 text-sm text-foreground transition-colors duration-200 hover:border-primary/40 hover:bg-accent data-[popup-open]:border-primary/40 data-[popup-open]:bg-accent">
+        <FileText className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="max-w-32 truncate">
           {selected?.name ?? t('project')}
         </span>
-        <ChevronDown className="size-3.5 shrink-0" />
+        <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
       </PopoverTrigger>
       <PopoverContent align="start" sideOffset={8} className="w-64 gap-0 p-0">
         <div className="flex items-center gap-2 border-b border-border px-3">

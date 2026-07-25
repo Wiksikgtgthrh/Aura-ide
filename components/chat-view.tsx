@@ -1080,7 +1080,46 @@ export function ChatView({
                       </span>
                     )
                   }
-                  return t('chatError')
+                  // Обрыв соединения ПОСРЕДИ стрима (медленный/нестабильный
+                  // прокси провайдера ключа): поясняем, что произошло и что
+                  // уже успело сохраниться, вместо общего «попробуйте ещё раз».
+                  const networkish =
+                    /network|failed to fetch|fetch failed|load failed|abort|socket|terminated|premature|econnreset|etimedout|stream/i.test(
+                      msg.toLowerCase(),
+                    )
+                  if (networkish || !msg) {
+                    const lastAssistant = [...messages]
+                      .reverse()
+                      .find((m) => m.role === 'assistant')
+                    const hadPartial = !!lastAssistant?.parts?.some((p) => {
+                      const text = (p as { type?: string; text?: string }).text
+                      return p.type === 'text' && typeof text === 'string' && text.trim().length > 0
+                    })
+                    return (
+                      <span>
+                        Соединение с моделью оборвалось при передаче ответа.
+                        {hadPartial &&
+                          ' Часть ответа успела прийти — созданные файлы уже сохранены, можно продолжить.'}{' '}
+                        Обычно это нестабильный прокси/провайдер API-ключа: нажмите «Повторить»,
+                        смените модель у ключа (селектор → «Сменить модель ключа…») или выберите другой ключ.
+                        {msg && (
+                          <span className="mt-1 block font-mono text-[11px] opacity-70">
+                            {msg.slice(0, 160)}
+                          </span>
+                        )}
+                      </span>
+                    )
+                  }
+                  return (
+                    <span>
+                      {t('chatError')}
+                      {msg && (
+                        <span className="mt-1 block font-mono text-[11px] opacity-70">
+                          {msg.slice(0, 160)}
+                        </span>
+                      )}
+                    </span>
+                  )
                 })()}
                 {/* Retry the failed request without retyping */}
                 {!(error?.message ?? '').includes('rate_limit') && (

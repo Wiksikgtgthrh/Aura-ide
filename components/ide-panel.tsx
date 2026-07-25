@@ -6,9 +6,12 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
+  Code,
   Copy,
+  Database,
   Download,
   ExternalLink,
+  Eye,
   File,
   FileKey2,
   FilePlus,
@@ -31,7 +34,9 @@ import {
   Trash2,
   Upload,
   X,
+  Zap,
 } from 'lucide-react'
+import { IdeDbTab } from '@/components/ide-db-tab'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import {
@@ -734,7 +739,7 @@ function BottomPanel({
 
 // --- panel -------------------------------------------------------------------
 
-type PanelTab = 'preview' | 'design' | 'live' | 'code'
+type PanelTab = 'preview' | 'design' | 'live' | 'code' | 'db'
 
 const NEW_FILE_TEMPLATE = (path: string): string => {
   if (path.endsWith('.tsx')) {
@@ -896,6 +901,32 @@ export function IdePanel({
   const [fileSearch, setFileSearch] = useState('')
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; path: string; isDir: boolean } | null>(null)
   const [collapseEpoch, setCollapseEpoch] = useState(0)
+  const fileSearchRef = useRef<HTMLInputElement | null>(null)
+
+  // Горячие клавиши как в VS Code/v0: Ctrl+P — к файлу, Ctrl+Shift+F — поиск
+  // по файлам (наш поиск ищет и по имени, и по содержимому), Ctrl+` — консоль.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey
+      if (!mod) return
+      const key = e.key.toLowerCase()
+      if (key === 'p' && !e.altKey) {
+        // Ctrl+P и Ctrl+Shift+P → фокус в поиск файлов (единая палитра).
+        e.preventDefault()
+        fileSearchRef.current?.focus()
+        fileSearchRef.current?.select()
+      } else if (key === 'f' && e.shiftKey) {
+        e.preventDefault()
+        fileSearchRef.current?.focus()
+        fileSearchRef.current?.select()
+      } else if (e.key === '`') {
+        e.preventDefault()
+        setConsoleOpen((o) => !o)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   // Version history (checkpoints)
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -1501,6 +1532,7 @@ export function IdePanel({
   const showPreview = tab === 'preview' || tab === 'design'
   const showCode = tab === 'code'
   const showLive = tab === 'live'
+  const showDb = tab === 'db'
 
   // Toggle the preview's design-select mode when entering/leaving the tab —
   // or when plan mode turns it on for the regular preview tab.
@@ -1513,12 +1545,14 @@ export function IdePanel({
     )
   }, [tab, designSelect])
 
-  const tabLabels: Record<PanelTab, string> = {
-    preview: t('idePreviewTab'),
-    design: t('ideDesignTab'),
-    code: t('ideCodeTab'),
-    live: t('ideLiveTab'),
-  }
+  // v0-стиль: сегмент-группа из иконок с подсказками (вместо текстовых вкладок).
+  const tabItems: { key: PanelTab; label: string; icon: React.ReactNode }[] = [
+    { key: 'preview', label: t('idePreviewTab'), icon: <Eye className="size-4" /> },
+    { key: 'design', label: t('ideDesignTab'), icon: <MousePointerClick className="size-4" /> },
+    { key: 'live', label: t('ideLiveTab'), icon: <Zap className="size-4" /> },
+    { key: 'code', label: t('ideCodeTab'), icon: <Code className="size-4" /> },
+    { key: 'db', label: 'База данных', icon: <Database className="size-4" /> },
+  ]
 
   // ---- Live preview: real dev server (npm run dev in the project) ----------
   const [liveUrl, setLiveUrl] = useState<string | null>(null)
@@ -1583,20 +1617,22 @@ export function IdePanel({
           <PanelLeft className="size-4" />
         </Button>
 
-        {/* Tab switcher — Preview / Design / Live / Code */}
-        <div className="flex items-center rounded-lg border border-border bg-muted/50 p-0.5 text-xs">
-          {(['preview', 'design', 'live', 'code'] as PanelTab[]).map((t_) => (
+        {/* Tab switcher — иконки-сегменты (v0-стиль): Превью/Дизайн/Live/Код/БД */}
+        <div className="flex items-center rounded-lg border border-border bg-muted/50 p-0.5">
+          {tabItems.map((t_) => (
             <button
-              key={t_}
+              key={t_.key}
               type="button"
-              onClick={() => setTab(t_)}
-              className={`rounded-md px-2.5 py-1 transition-all duration-150 active:scale-95 ${
-                tab === t_
+              onClick={() => setTab(t_.key)}
+              title={t_.label}
+              aria-label={t_.label}
+              className={`rounded-md p-1.5 transition-all duration-150 active:scale-95 ${
+                tab === t_.key
                   ? 'bg-background text-foreground shadow-xs'
                   : 'text-muted-foreground hover:text-foreground'
               }`}
             >
-              {tabLabels[t_]}
+              {t_.icon}
             </button>
           ))}
         </div>
@@ -1636,15 +1672,64 @@ export function IdePanel({
           )}
         </button>
 
-        <div className="mx-auto flex flex-1 items-center justify-center gap-1 text-xs text-muted-foreground truncate">
+        {/* Адресная пилюля (v0-стиль): устройство · путь/URL · обновить · открыть */}
+        <div className="mx-2 flex min-w-0 flex-1 items-center justify-center gap-2">
+          <div className="flex h-7 w-full min-w-0 max-w-md items-center gap-0.5 rounded-lg border border-border bg-muted/40 px-1">
+            <button
+              type="button"
+              onClick={() => setMobile((m) => !m)}
+              title={t('ideMobileToggle')}
+              aria-label={t('ideMobileToggle')}
+              className={`rounded-md p-1 transition-colors ${mobile ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}
+            >
+              <MonitorSmartphone className="size-3.5" />
+            </button>
+            <span
+              className={`ml-0.5 size-1.5 shrink-0 rounded-full ${
+                tab === 'live'
+                  ? liveState === 'on'
+                    ? 'bg-emerald-500'
+                    : liveState === 'starting'
+                      ? 'bg-amber-500 animate-pulse'
+                      : 'bg-muted-foreground/40'
+                  : 'bg-emerald-500'
+              }`}
+            />
+            <span className="min-w-0 flex-1 truncate px-1.5 font-mono text-[11px] text-muted-foreground">
+              {tab === 'live' ? (liveUrl ?? t('ideLiveOff')) : '/'}
+            </span>
+            <button
+              type="button"
+              onClick={() => (tab === 'live' ? setLiveReloadKey((k) => k + 1) : handleManualReload())}
+              title={t('ideLiveReload')}
+              aria-label={t('ideLiveReload')}
+              className="rounded-md p-1 text-muted-foreground transition-all hover:bg-accent hover:text-foreground active:rotate-90"
+            >
+              <RotateCw className="size-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (tab === 'live') {
+                  if (liveUrl) window.open(liveUrl, '_blank', 'noopener,noreferrer')
+                } else handleOpenNewTab()
+              }}
+              title={t('ideOpenNewTab')}
+              aria-label={t('ideOpenNewTab')}
+              className="rounded-md p-1 text-muted-foreground transition-transform hover:bg-accent hover:text-foreground active:scale-90"
+            >
+              <ExternalLink className="size-3.5" />
+            </button>
+          </div>
+
           {busy && hasFiles && (
-            <span className="flex items-center gap-1.5 rounded-full border border-border bg-background/80 px-2 py-0.5 text-[10px]">
+            <span className="flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-background/80 px-2 py-0.5 text-[10px] text-muted-foreground">
               <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
               Generating…
             </span>
           )}
           {!busy && saveState !== 'idle' && (
-            <span className="flex items-center gap-1 text-[10px] text-muted-foreground animate-in fade-in duration-200">
+            <span className="flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground animate-in fade-in duration-200">
               {saveState === 'saving' ? (
                 <>
                   <Loader2 className="size-3 animate-spin" />
@@ -1776,9 +1861,11 @@ export function IdePanel({
             <div className="relative mx-2 mb-1">
               <Search className="pointer-events-none absolute left-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground/60" />
               <input
+                ref={fileSearchRef}
                 value={fileSearch}
                 onChange={(e) => setFileSearch(e.target.value)}
                 placeholder={t('ideFileSearch')}
+                title="Ctrl+P — к файлу · Ctrl+Shift+F — поиск по содержимому"
                 className="h-6 w-full rounded-md border border-border bg-background pl-6 pr-5 text-[11px] text-foreground outline-none placeholder:text-muted-foreground/60 focus:border-ring"
                 spellCheck={false}
               />
@@ -1878,6 +1965,31 @@ export function IdePanel({
                   <p className="max-w-xs text-center text-sm text-pretty">
                     {t('ideModeEmpty')}
                   </p>
+                  {/* Горячие клавиши — как в больших IDE */}
+                  <div className="mt-4 flex flex-col gap-2 text-xs">
+                    {(
+                      [
+                        { label: 'Перейти к файлу', keys: ['Ctrl', 'P'] },
+                        { label: 'Поиск по файлам', keys: ['Ctrl', 'Shift', 'F'] },
+                        { label: 'Консоль · терминал', keys: ['Ctrl', '`'] },
+                        { label: 'Переименовать файл', keys: ['F2'] },
+                      ] as { label: string; keys: string[] }[]
+                    ).map((h) => (
+                      <div key={h.label} className="flex items-center justify-between gap-8">
+                        <span className="text-muted-foreground">{h.label}</span>
+                        <span className="flex items-center gap-1">
+                          {h.keys.map((k, i) => (
+                            <span key={i} className="flex items-center gap-1">
+                              {i > 0 && <span className="text-muted-foreground/50">+</span>}
+                              <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground shadow-xs">
+                                {k}
+                              </kbd>
+                            </span>
+                          ))}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 </>
               )}
             </div>
@@ -1912,50 +2024,9 @@ export function IdePanel({
                 {/* Preview pane — kept MOUNTED (css-hidden on Code tab) so the
                     runtime stays warm and the console keeps streaming. The
                     Live overlay renders on top when the Live tab is active. */}
-                <div className={`relative min-h-0 flex-1 flex-col ${showPreview || showLive ? 'flex' : 'hidden'}`}>
-                  {/* Preview toolbar — a clean, minimal bar (no fake browser
-                      chrome / dead back-forward buttons, which looked out of
-                      place). Just the live status, a working refresh, device
-                      toggle and open-in-new-tab. */}
-                  <div className="flex h-10 shrink-0 items-center gap-1.5 border-b border-border bg-background px-2.5">
-                    <span className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
-                      <span className="size-1.5 rounded-full bg-emerald-500" />
-                      {t('idePreviewTab')}
-                    </span>
-
-                    {/* Адресная строка-пилюля (как в браузере) */}
-                    <div className="mx-1.5 flex h-7 min-w-0 flex-1 items-center rounded-lg border border-border bg-muted/40 px-2.5">
-                      <span className="truncate font-mono text-[11px] text-muted-foreground">/</span>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={handleManualReload}
-                      title={t('ideLiveReload')}
-                      aria-label={t('ideLiveReload')}
-                      className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground transition-all active:rotate-90 active:scale-90"
-                    >
-                      <RotateCw className="size-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setMobile((m) => !m)}
-                      title={t('ideMobileToggle')}
-                      aria-label={t('ideMobileToggle')}
-                      className={`rounded-md p-1.5 transition-colors ${mobile ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}
-                    >
-                      <MonitorSmartphone className="size-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleOpenNewTab}
-                      aria-label="Open in new tab"
-                      title={t('ideOpenNewTab')}
-                      className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground transition-transform active:scale-90"
-                    >
-                      <ExternalLink className="size-3.5" />
-                    </button>
-                  </div>
+                <div className={`relative min-h-0 flex-1 flex-col ${showPreview || showLive || showDb ? 'flex' : 'hidden'}`}>
+                  {/* Управление превью (обновить/устройство/открыть) живёт в
+                      адресной пилюле шапки — здесь только контент. */}
 
                   {/* Design mode hint */}
                   {tab === 'design' && (
@@ -2011,24 +2082,6 @@ export function IdePanel({
                       <span className="ml-auto flex items-center gap-1">
                         <button
                           type="button"
-                          onClick={() => setMobile((m) => !m)}
-                          title={t('ideMobileToggle')}
-                          aria-label={t('ideMobileToggle')}
-                          className={`rounded p-1 transition-colors ${mobile ? 'bg-primary/10 text-primary' : 'text-muted-foreground/70 hover:text-foreground'}`}
-                        >
-                          <MonitorSmartphone className="size-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setLiveReloadKey((k) => k + 1)}
-                          disabled={liveState !== 'on'}
-                          title={t('ideLiveReload')}
-                          className="rounded p-1 text-muted-foreground/70 hover:text-foreground disabled:opacity-40"
-                        >
-                          <RotateCw className="size-3.5" />
-                        </button>
-                        <button
-                          type="button"
                           onClick={() => (liveState === 'on' ? void stopLive() : void startLive())}
                           className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground"
                         >
@@ -2078,6 +2131,19 @@ export function IdePanel({
                         </div>
                       )}
                     </div>
+                  </div>
+                )}
+
+                {/* База данных — локальная схема проекта + MCP-подключения */}
+                {showDb && (
+                  <div className="absolute inset-0 z-10 flex flex-col bg-background animate-in fade-in duration-200">
+                    <IdeDbTab
+                      filePaths={Array.from(localFiles.keys())}
+                      onOpenFile={(p) => {
+                        setActiveFile(p)
+                        setTab('code')
+                      }}
+                    />
                   </div>
                 )}
               </div>
