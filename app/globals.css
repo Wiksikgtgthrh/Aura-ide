@@ -163,6 +163,12 @@
   body {
     @apply bg-background text-foreground;
   }
+  /* Нативные чекбоксы/радио/прогресс — в фирменный цвет вместо чёрного. */
+  input[type='checkbox'],
+  input[type='radio'],
+  progress {
+    accent-color: var(--primary);
+  }
 }
 
 /* Sidebar: subtle shadow instead of hard border */
@@ -172,6 +178,15 @@ aside {
 .dark aside,
 :root:not(.light) aside {
   box-shadow: 1px 0 0 0 oklch(1 0 0 / 6%);
+}
+
+/* Admin: user-detail drawer slides in from the right */
+@keyframes drawer-in {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+.drawer-in {
+  animation: drawer-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 /* Mic pulse animation */

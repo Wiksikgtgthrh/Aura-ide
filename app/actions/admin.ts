@@ -13,12 +13,30 @@ import {
   transactions,
   plugins,
   pluginAccess,
+  pluginVersions,
   userPlugins,
 } from '@/lib/db/schema'
+import {
+  sanitizeAuthors,
+  sanitizeMedia,
+  normalizeVersion,
+  type PluginAuthor,
+  type PluginMediaItem,
+  type PluginVersionEntry,
+} from '@/lib/plugin-types'
 import { and, asc, desc, eq, ilike, or, sql } from 'drizzle-orm'
+import { revalidateTag } from 'next/cache'
 import { decryptSecret, encryptSecret, isEncrypted } from '@/lib/crypto'
 import { auth } from '@/lib/auth'
 import { requireAdmin, PERMANENT_UNTIL, type Role } from '@/lib/admin'
+import {
+  DEFAULT_MODEL_ID,
+  findWorkingModel,
+  maskKey,
+  normalizeBaseUrl,
+  parseKeyLines,
+  parseModelList,
+} from '@/lib/model-probe'
 import { dockerContainerStats, type ContainerStat } from '@/lib/terminal'
 import { getLimits, setLimits, type PlatformLimits } from '@/lib/platform-settings'
 
@@ -429,11 +447,8 @@ export type AdminPlanKey = {
   maskedKey: string
   modelId: string
   baseUrl: string
-}
-
-function maskKey(key: string): string {
-  if (key.length <= 8) return '••••••••'
-  return `${key.slice(0, 4)}••••${key.slice(-4)}`
+  status: string // 'unknown' | 'valid' | 'invalid'
+  ping: number | null
 }
 
 export async function listPlanApiKeys(planKey: string): Promise<AdminPlanKey[] | null> {
@@ -451,6 +466,8 @@ export async function listPlanApiKeys(planKey: string): Promise<AdminPlanKey[] |
     maskedKey: maskKey(isEncrypted(r.key) ? decryptSecret(r.key) : r.key),
     modelId: r.modelId,
     baseUrl: r.baseUrl,
+    status: r.status ?? 'unknown',
+    ping: r.ping ?? null,
   }))
 }
 
@@ -484,6 +501,83 @@ export async function deletePlanApiKey(id: string): Promise<boolean> {
   return true
 }
 
+export type PlanKeysImportResult = {
+  created: number
+  failed: number
+  perKey: {
+    label: string
+    maskedKey: string
+    workingModel: string | null
+    failReason: string | null
+  }[]
+}
+
+/**
+ * Массовая загрузка API-ключей в тариф — как bulk-import в «Мои API», но
+ * пишет в platform_api_keys с привязкой к planKey. Формат: один ключ на
+ * строку + общий baseUrl + список моделей-кандидатов; каждому ключу
+ * назначается первая рабочая модель (однотокеновая проба chat/completions).
+ * Нерабочие ключи тоже сохраняются (status 'invalid') — их видно в списке
+ * и легко удалить.
+ */
+export async function importPlanKeysWithModelProbe(input: {
+  planKey: string
+  label: string
+  baseUrl: string
+  models: string
+  keysText: string
+}): Promise<PlanKeysImportResult | null> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return null
+
+  const planKey = input.planKey.trim().toLowerCase().slice(0, 40)
+  if (!planKey) return null
+  const baseUrl = normalizeBaseUrl(input.baseUrl).slice(0, 300)
+  const models = parseModelList(input.models)
+  const modelsToProbe = models.length > 0 ? models : [DEFAULT_MODEL_ID]
+  const keys = parseKeyLines(input.keysText)
+  const baseLabel = (input.label.trim() || 'Aura').slice(0, 70)
+
+  let created = 0
+  let failed = 0
+  const perKey: PlanKeysImportResult['perKey'] = []
+
+  await Promise.all(
+    keys.map(async (rawKey, index) => {
+      const probe = await findWorkingModel(rawKey, baseUrl, modelsToProbe)
+      const label = keys.length > 1 ? `${baseLabel} ${index + 1}` : baseLabel
+      try {
+        await db.insert(platformApiKeys).values({
+          planKey,
+          label,
+          key: encryptSecret(rawKey),
+          modelId: probe.workingModel ?? modelsToProbe[0],
+          baseUrl,
+          status: probe.workingModel ? 'valid' : 'invalid',
+          ping: probe.ping ?? undefined,
+        })
+        if (probe.workingModel) created++
+        else failed++
+      } catch {
+        failed++
+      }
+      perKey.push({
+        label,
+        maskedKey: maskKey(rawKey),
+        workingModel: probe.workingModel,
+        failReason: probe.failReason,
+      })
+    }),
+  )
+
+  await audit(actor.id, 'import_plan_keys', planKey, {
+    created,
+    failed,
+    models: modelsToProbe,
+  })
+  return { created, failed, perKey }
+}
+
 // ---- Plugins ----------------------------------------------------------------
 
 export type AdminPlugin = {
@@ -499,6 +593,9 @@ export type AdminPlugin = {
   priceRub: number
   hidden: boolean
   docs: string
+  longDescription: string
+  donateAuthors: PluginAuthor[]
+  media: PluginMediaItem[]
   manifest: string // JSON stringified for editing
   installs: number
 }
@@ -525,6 +622,9 @@ export async function listAllPlugins(): Promise<AdminPlugin[] | null> {
     priceRub: r.priceRub ?? 0,
     hidden: !!r.hidden,
     docs: r.docs ?? '',
+    longDescription: r.longDescription ?? '',
+    donateAuthors: sanitizeAuthors(r.donateAuthors),
+    media: sanitizeMedia(r.media),
     manifest: JSON.stringify(r.manifest ?? {}, null, 2),
     installs: byPlugin.get(r.id) ?? 0,
   }))
@@ -543,6 +643,9 @@ export async function upsertPlugin(input: {
   priceRub: number
   hidden: boolean
   docs: string
+  longDescription: string
+  donateAuthors: PluginAuthor[]
+  media: PluginMediaItem[]
   manifest: string
 }): Promise<{ ok: boolean; error?: string }> {
   const actor = await requireAdmin('admin')
@@ -568,7 +671,10 @@ export async function upsertPlugin(input: {
     icon: input.icon.trim().slice(0, 40) || 'Puzzle',
     priceRub: Math.max(0, Math.round(input.priceRub) || 0),
     hidden: !!input.hidden,
-    docs: input.docs.slice(0, 10000),
+    docs: input.docs.slice(0, 20000),
+    longDescription: input.longDescription.slice(0, 20000),
+    donateAuthors: sanitizeAuthors(input.donateAuthors) as unknown as object,
+    media: sanitizeMedia(input.media) as unknown as object,
     manifest: manifest as object,
     updatedAt: new Date(),
   }
@@ -578,7 +684,62 @@ export async function upsertPlugin(input: {
     await db.insert(plugins).values(values).onConflictDoUpdate({ target: plugins.slug, set: values })
   }
   await audit(actor.id, 'upsert_plugin', input.id ?? slug)
+  revalidateTag('marketplace-plugins', 'max')
   return { ok: true }
+}
+
+// ---- Версии плагина (история обновлений) -------------------------------------
+
+export async function listPluginVersions(pluginId: string): Promise<PluginVersionEntry[] | null> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return null
+  try {
+    const rows = await db
+      .select()
+      .from(pluginVersions)
+      .where(eq(pluginVersions.pluginId, pluginId))
+      .orderBy(desc(pluginVersions.createdAt))
+    return rows.map((r) => ({
+      id: r.id,
+      version: r.version,
+      changelog: r.changelog,
+      createdAt: r.createdAt.toISOString(),
+    }))
+  } catch {
+    return [] // таблица ещё не создана (не запущен pnpm migrate:admin)
+  }
+}
+
+/**
+ * «Новая версия»: пишет запись в plugin_versions и обновляет plugins.version.
+ * Версия валидируется (1.2.3, допускается суффикс -beta и т.п.).
+ */
+export async function addPluginVersion(input: {
+  pluginId: string
+  version: string
+  changelog: string
+}): Promise<{ ok: boolean; error?: string }> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return { ok: false, error: 'forbidden' }
+  const version = normalizeVersion(input.version)
+  if (!version) return { ok: false, error: 'Версия должна быть вида 1.2.3' }
+  const changelog = input.changelog.trim().slice(0, 8000)
+  await db.insert(pluginVersions).values({ pluginId: input.pluginId, version, changelog })
+  await db
+    .update(plugins)
+    .set({ version, updatedAt: new Date() })
+    .where(eq(plugins.id, input.pluginId))
+  await audit(actor.id, 'add_plugin_version', input.pluginId, { version })
+  revalidateTag('marketplace-plugins', 'max')
+  return { ok: true }
+}
+
+export async function deletePluginVersion(versionId: string): Promise<boolean> {
+  const actor = await requireAdmin('admin')
+  if (!actor) return false
+  await db.delete(pluginVersions).where(eq(pluginVersions.id, versionId))
+  await audit(actor.id, 'delete_plugin_version', versionId)
+  return true
 }
 
 export async function deletePlugin(id: string): Promise<boolean> {
@@ -586,6 +747,7 @@ export async function deletePlugin(id: string): Promise<boolean> {
   if (!actor) return false
   await db.delete(plugins).where(eq(plugins.id, id))
   await audit(actor.id, 'delete_plugin', id)
+  revalidateTag('marketplace-plugins', 'max')
   return true
 }
 

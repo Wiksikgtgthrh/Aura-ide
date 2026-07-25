@@ -68,6 +68,10 @@ export const platformApiKeys = pgTable('platform_api_keys', {
   key: text('key').notNull(),
   baseUrl: text('baseUrl').notNull().default('https://api.openai.com/v1'),
   modelId: text('modelId').notNull().default('gpt-4o-mini'),
+  // Результат последней пробы: 'unknown' | 'valid' | 'invalid' (bulk-импорт
+  // прогоняет каждый ключ по списку моделей и сохраняет рабочую).
+  status: text('status').notNull().default('unknown'),
+  ping: integer('ping'),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
 
@@ -377,8 +381,25 @@ export const plugins = pgTable('plugins', {
   priceRub: integer('priceRub').notNull().default(0),
   hidden: boolean('hidden').notNull().default(false),
   docs: text('docs').notNull().default(''),
+  // Магазин (итерация 2, added by migrate-admin):
+  // лендинг плагина (markdown), авторы с реквизитами для доната, медиа-галерея.
+  longDescription: text('longDescription').notNull().default(''),
+  donateAuthors: jsonb('donateAuthors').notNull().default([]), // [{nick, requisites}]
+  media: jsonb('media').notNull().default([]), // [{type:'image'|'video', url, caption}]
   publishedAt: timestamp('publishedAt').notNull().defaultNow(),
   updatedAt: timestamp('updatedAt').notNull().defaultNow(),
+})
+
+// История обновлений плагина: версия + changelog. plugins.version всегда
+// равен последней добавленной версии (обновляется в addPluginVersion).
+export const pluginVersions = pgTable('plugin_versions', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  pluginId: text('pluginId')
+    .notNull()
+    .references(() => plugins.id, { onDelete: 'cascade' }),
+  version: text('version').notNull(),
+  changelog: text('changelog').notNull().default(''),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
 
 export const userPlugins = pgTable('user_plugins', {

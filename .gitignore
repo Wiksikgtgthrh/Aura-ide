@@ -17,3 +17,6 @@ node_modules
 .aura/
 # Локальный источник DATABASE_URL — НЕ коммитить (боевой секрет)
 config.txt
+
+# TypeScript incremental build info (генерируется tsc --noEmit)
+tsconfig.tsbuildinfo

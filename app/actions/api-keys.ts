@@ -8,6 +8,14 @@ import { and, asc, desc, eq } from 'drizzle-orm'
 import { revalidatePath, revalidateTag, unstable_cache } from 'next/cache'
 import { getSession } from '@/lib/session'
 import { assertSafeFetchUrl } from '@/lib/ssrf'
+import {
+  DEFAULT_BASE_URL,
+  DEFAULT_MODEL_ID,
+  maskKey,
+  normalizeBaseUrl,
+  probeModel,
+  probeFailReason,
+} from '@/lib/model-probe'
 
 async function getUserIdOrNull() {
   const session = await getSession()
@@ -42,21 +50,6 @@ export type ApiKeysGrouped = {
   ungrouped: ApiKeyItem[]
 }
 
-const DEFAULT_BASE_URL = 'https://api.openai.com/v1'
-const DEFAULT_MODEL_ID = 'gpt-4o-mini'
-
-function maskKey(key: string): string {
-  if (key.length <= 8) return '••••••••'
-  return `${key.slice(0, 4)}••••${key.slice(-4)}`
-}
-
-function normalizeBaseUrl(input: string | undefined | null): string {
-  const v = (input ?? '').trim()
-  if (!v) return DEFAULT_BASE_URL
-  // strip trailing slash
-  return v.replace(/\/+$/, '')
-}
-
 /**
  * Verify an OpenAI-compatible API key by calling GET {baseUrl}/models.
  * Works for OpenAI, Groq, OpenRouter, Together, DeepInfra, Fireworks, local
@@ -89,85 +82,8 @@ async function verifyKey(
   }
 }
 
-/**
- * Probe a SPECIFIC model with a 1-token chat completion. Returns whether the
- * key can actually call that model (a key may list /models fine yet lack access
- * to a given model, or a base URL may only serve certain models).
- */
-async function probeModel(
-  rawKey: string,
-  baseUrl: string,
-  modelId: string,
-): Promise<{
-  ok: boolean
-  ping: number | null
-  httpStatus?: number
-  providerMessage?: string
-}> {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 15000)
-  const started = Date.now()
-  try {
-    const safe = await assertSafeFetchUrl(normalizeBaseUrl(baseUrl))
-    const res = await fetch(`${safe}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${rawKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: modelId,
-        messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: 1,
-        stream: false,
-      }),
-      signal: controller.signal,
-    })
-    const ping = Date.now() - started
-    if (res.ok) return { ok: true, ping }
-    // 400 with a model-related error still proves the key auths; but to be
-    // strict about "this model works" we only accept 2xx.
-    // Surface the provider's OWN error message — «Invalid API key»,
-    // «подписка истекла», «insufficient quota» и т.п. — so the user sees WHY.
-    let providerMessage: string | undefined
-    const bodyText = await res.text().catch(() => '')
-    try {
-      const parsed = JSON.parse(bodyText) as {
-        error?: { message?: string } | string
-        message?: string
-      }
-      providerMessage =
-        typeof parsed.error === 'object' && parsed.error?.message
-          ? parsed.error.message
-          : typeof parsed.error === 'string'
-            ? parsed.error
-            : parsed.message
-    } catch {
-      /* not JSON */
-    }
-    if (!providerMessage && bodyText) providerMessage = bodyText
-    return {
-      ok: false,
-      ping: null,
-      httpStatus: res.status,
-      providerMessage: providerMessage?.slice(0, 140),
-    }
-  } catch {
-    return { ok: false, ping: null }
-  } finally {
-    clearTimeout(timeout)
-  }
-}
-
-/** Human failReason for a failed model probe, including the provider's own words. */
-function probeFailReason(
-  modelId: string,
-  probe: { httpStatus?: number; providerMessage?: string },
-): string {
-  const status = probe.httpStatus ? `HTTP ${probe.httpStatus}` : 'сеть/таймаут'
-  const detail = probe.providerMessage ? ` — ${probe.providerMessage}` : ''
-  return `Модель ${modelId}: ${status}${detail}`
-}
+// probeModel / probeFailReason / maskKey / normalizeBaseUrl живут в
+// lib/model-probe.ts — общие с массовой загрузкой ключей тарифов в админке.
 
 export type ModelProbeImportResult = {
   created: number

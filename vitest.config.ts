@@ -5,6 +5,8 @@ export default defineConfig({
     alias: {
       // 'server-only' throws when imported outside an RSC; stub it in tests.
       'server-only': new URL('./tests/stubs/server-only.ts', import.meta.url).pathname,
+      // Поддержка алиаса '@/…' (как в tsconfig) для модулей под тестами.
+      '@': new URL('.', import.meta.url).pathname.replace(/\/$/, ''),
     },
   },
   test: {

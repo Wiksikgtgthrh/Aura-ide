@@ -94,6 +94,11 @@ async function main() {
   `
   console.log('  ✓ platform_api_keys')
 
+  // 4b) Bulk-import (итерация 2): статус пробы и пинг платформенных ключей.
+  await sql`ALTER TABLE platform_api_keys ADD COLUMN IF NOT EXISTS "status" text NOT NULL DEFAULT 'unknown'`
+  await sql`ALTER TABLE platform_api_keys ADD COLUMN IF NOT EXISTS "ping" integer`
+  console.log('  ✓ platform_api_keys.status/ping')
+
   // 5) Hidden-plugin access grants.
   await sql`
     CREATE TABLE IF NOT EXISTS plugin_access (
@@ -123,6 +128,21 @@ async function main() {
   await sql`ALTER TABLE plugins ADD COLUMN IF NOT EXISTS "hidden" boolean NOT NULL DEFAULT false`
   await sql`ALTER TABLE plugins ADD COLUMN IF NOT EXISTS "docs" text NOT NULL DEFAULT ''`
   console.log('  ✓ plugins.priceRub/hidden/docs')
+
+  // 8) Магазин плагинов (итерация 2): лендинг, авторы-донаты, медиа, версии.
+  await sql`ALTER TABLE plugins ADD COLUMN IF NOT EXISTS "longDescription" text NOT NULL DEFAULT ''`
+  await sql`ALTER TABLE plugins ADD COLUMN IF NOT EXISTS "donateAuthors" jsonb NOT NULL DEFAULT '[]'::jsonb`
+  await sql`ALTER TABLE plugins ADD COLUMN IF NOT EXISTS "media" jsonb NOT NULL DEFAULT '[]'::jsonb`
+  await sql`
+    CREATE TABLE IF NOT EXISTS plugin_versions (
+      id text PRIMARY KEY,
+      "pluginId" text NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+      version text NOT NULL,
+      changelog text NOT NULL DEFAULT '',
+      "createdAt" timestamp NOT NULL DEFAULT now()
+    )
+  `
+  console.log('  ✓ plugins.longDescription/donateAuthors/media + plugin_versions')
 
   console.log('Done. Admin schema is ready.')
 }

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import {
   ArrowLeft,
@@ -18,7 +18,7 @@ import {
   Loader2,
   Pencil,
   Trash2,
-  X,
+  Upload,
 } from 'lucide-react'
 import {
   getAdminOverview,
@@ -34,25 +34,23 @@ import {
   listPlanApiKeys,
   addPlanApiKey,
   deletePlanApiKey,
+  importPlanKeysWithModelProbe,
   getAuditLog,
   muteUser,
   banUser,
   purgeGuests,
   listAllPlugins,
-  upsertPlugin,
   deletePlugin,
-  listPluginAccess,
-  grantPluginAccess,
-  revokePluginAccess,
   type AdminOverview,
   type AdminUserRow,
   type AdminUserDetail,
   type AdminPlan,
   type AdminPlanKey,
+  type PlanKeysImportResult,
   type AuditRow,
   type AdminPlugin,
-  type PluginGrant,
 } from '@/app/actions/admin'
+import { PluginEditor } from '@/components/admin-plugin-editor'
 import type { Role } from '@/lib/admin'
 import type { PlatformLimits } from '@/lib/platform-settings'
 
@@ -97,7 +95,7 @@ export function AdminContent({ isSuperadmin }: { isSuperadmin: boolean }) {
             onClick={() => setTab(tt.key)}
             className={`flex items-center gap-1.5 rounded-t-md px-3 py-2 text-sm transition-colors ${
               tab === tt.key
-                ? 'border-b-2 border-foreground font-medium text-foreground'
+                ? 'border-b-2 border-primary font-medium text-foreground'
                 : 'text-muted-foreground hover:text-foreground'
             }`}
           >
@@ -124,6 +122,41 @@ export function AdminContent({ isSuperadmin }: { isSuperadmin: boolean }) {
   )
 }
 
+/**
+ * Ступенчатое появление строк/карточек: каждый следующий элемент появляется
+ * чуть позже (потолок — 20 шагов, чтобы длинные списки не «ждали»).
+ * fillMode backwards держит элемент невидимым до старта его анимации.
+ */
+function stagger(i: number): React.CSSProperties {
+  return { animationDelay: `${Math.min(i, 20) * 30}ms`, animationFillMode: 'backwards' }
+}
+
+const STAGGER_ROW = 'animate-in fade-in slide-in-from-bottom-1 duration-300'
+
+/** Плавный count-up чисел (Обзор): анимирует изменение значения через rAF. */
+function AnimatedNumber({ value }: { value: number }) {
+  const [display, setDisplay] = useState(value)
+  const prevRef = useRef(value)
+  useEffect(() => {
+    const from = prevRef.current
+    const to = value
+    if (from === to) return
+    prevRef.current = to
+    const started = performance.now()
+    const duration = 600
+    let raf = 0
+    const tick = (now: number) => {
+      const p = Math.min(1, (now - started) / duration)
+      const eased = 1 - Math.pow(1 - p, 3) // ease-out cubic
+      setDisplay(Math.round(from + (to - from) * eased))
+      if (p < 1) raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [value])
+  return <>{display.toLocaleString('ru-RU')}</>
+}
+
 function ComingTab({ title, note }: { title: string; note: string }) {
   return (
     <div className="rounded-xl border border-dashed border-border bg-card px-6 py-12 text-center">
@@ -136,93 +169,7 @@ function ComingTab({ title, note }: { title: string; note: string }) {
 const EMPTY_PLUGIN: AdminPlugin = {
   id: '', slug: '', name: '', description: '', author: 'Aura Team', version: '1.0.0',
   type: 'utility', scope: 'ide-component', icon: 'Puzzle', priceRub: 0, hidden: false,
-  docs: '', manifest: '{}', installs: 0,
-}
-
-function PluginHiddenAccess({ pluginId }: { pluginId: string }) {
-  const [grants, setGrants] = useState<PluginGrant[] | null>(null)
-  const [ident, setIdent] = useState('')
-  const [err, setErr] = useState('')
-  const load = async () => setGrants(await listPluginAccess(pluginId))
-  useEffect(() => {
-    void load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pluginId])
-  const add = async () => {
-    setErr('')
-    const res = await grantPluginAccess(pluginId, ident)
-    if (res.ok) {
-      setIdent('')
-      await load()
-    } else setErr(res.error ?? 'Ошибка')
-  }
-  return (
-    <div className="mt-2 rounded-lg border border-dashed border-border p-2.5">
-      <p className="mb-1.5 text-xs font-medium text-foreground">Доступ к скрытому плагину</p>
-      <div className="flex flex-wrap gap-1.5">
-        {grants?.map((g) => (
-          <span key={g.id} className="flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] text-foreground">
-            {g.label}
-            <button type="button" onClick={async () => { await revokePluginAccess(g.id); await load() }} className="text-muted-foreground hover:text-destructive"><X className="size-3" /></button>
-          </span>
-        ))}
-      </div>
-      <div className="mt-2 flex gap-2">
-        <input value={ident} onChange={(e) => setIdent(e.target.value)} placeholder="@логин или почта" className="h-8 flex-1 rounded-md border border-border bg-background px-2 text-xs outline-none" />
-        <button type="button" onClick={add} className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground">Дать доступ</button>
-      </div>
-      {err && <p className="mt-1 text-xs text-destructive">{err}</p>}
-    </div>
-  )
-}
-
-function PluginEditor({ plugin, onSaved, onCancel }: { plugin: AdminPlugin; onSaved: () => void; onCancel: () => void }) {
-  const [d, setD] = useState(plugin)
-  const [err, setErr] = useState('')
-  const [saving, setSaving] = useState(false)
-  const save = async () => {
-    setSaving(true)
-    setErr('')
-    const res = await upsertPlugin(d)
-    setSaving(false)
-    if (res.ok) onSaved()
-    else setErr(res.error ?? 'Ошибка')
-  }
-  return (
-    <div className="rounded-xl border border-border bg-card p-4">
-      <div className="grid gap-2 sm:grid-cols-2">
-        <input value={d.name} onChange={(e) => setD({ ...d, name: e.target.value })} placeholder="Название" className="h-9 rounded-md border border-border bg-background px-2 text-sm outline-none" />
-        <input value={d.slug} onChange={(e) => setD({ ...d, slug: e.target.value })} placeholder="slug" className="h-9 rounded-md border border-border bg-background px-2 font-mono text-sm outline-none" />
-        <input value={d.author} onChange={(e) => setD({ ...d, author: e.target.value })} placeholder="Автор(ы)" className="h-9 rounded-md border border-border bg-background px-2 text-sm outline-none" />
-        <input value={d.version} onChange={(e) => setD({ ...d, version: e.target.value })} placeholder="Версия" className="h-9 rounded-md border border-border bg-background px-2 text-sm outline-none" />
-        <select value={d.type} onChange={(e) => setD({ ...d, type: e.target.value })} className="h-9 rounded-md border border-border bg-background px-2 text-sm outline-none">
-          <option value="utility">Утилита</option>
-          <option value="skill">Навык ИИ</option>
-          <option value="system-mod">Системный мод</option>
-        </select>
-        <select value={d.scope} onChange={(e) => setD({ ...d, scope: e.target.value })} className="h-9 rounded-md border border-border bg-background px-2 text-sm outline-none">
-          <option value="ide-component">Интерфейс IDE</option>
-          <option value="ai-skill">Скилл/промпт ИИ</option>
-          <option value="system-ui">Системный UI</option>
-        </select>
-        <input value={d.icon} onChange={(e) => setD({ ...d, icon: e.target.value })} placeholder="Иконка (Puzzle)" className="h-9 rounded-md border border-border bg-background px-2 text-sm outline-none" />
-        <input type="number" value={d.priceRub} onChange={(e) => setD({ ...d, priceRub: Number(e.target.value) })} placeholder="Цена ₽ (0 = бесплатно)" className="h-9 rounded-md border border-border bg-background px-2 text-sm outline-none" />
-      </div>
-      <textarea value={d.description} onChange={(e) => setD({ ...d, description: e.target.value })} placeholder="Краткое описание" rows={2} className="mt-2 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none" />
-      <textarea value={d.docs} onChange={(e) => setD({ ...d, docs: e.target.value })} placeholder="Документация (Markdown)" rows={3} className="mt-2 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none" />
-      <textarea value={d.manifest} onChange={(e) => setD({ ...d, manifest: e.target.value })} placeholder='Манифест (JSON): { "rules": [...], "components": [...] }' rows={5} className="mt-2 w-full rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs outline-none" />
-      <label className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
-        <input type="checkbox" checked={d.hidden} onChange={(e) => setD({ ...d, hidden: e.target.checked })} />
-        Скрытый плагин (доступен только выбранным пользователям)
-      </label>
-      {d.hidden && d.id && <PluginHiddenAccess pluginId={d.id} />}
-      {err && <p className="mt-2 text-sm text-destructive">{err}</p>}
-      <div className="mt-3 flex gap-2">
-        <button type="button" onClick={save} disabled={saving} className="rounded-md bg-foreground px-3 py-1.5 text-sm font-medium text-background disabled:opacity-60">{saving ? 'Сохранение…' : 'Сохранить'}</button>
-        <button type="button" onClick={onCancel} className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground">Отмена</button>
-      </div>
-    </div>
-  )
+  docs: '', longDescription: '', donateAuthors: [], media: [], manifest: '{}', installs: 0,
 }
 
 function PluginsTab() {
@@ -259,8 +206,8 @@ function PluginsTab() {
       )}
 
       <div className="grid gap-3 sm:grid-cols-2">
-        {list.map((p) => (
-          <div key={p.id} className="rounded-xl border border-border bg-card p-4">
+        {list.map((p, i) => (
+          <div key={p.id} className={`rounded-xl border border-border bg-card p-4 ${STAGGER_ROW}`} style={stagger(i)}>
             <div className="flex items-start justify-between gap-2">
               <div>
                 <div className="flex items-center gap-2">
@@ -307,8 +254,8 @@ function AuditLog() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {rows.map((r) => (
-                <tr key={r.id}>
+              {rows.map((r, i) => (
+                <tr key={r.id} className={STAGGER_ROW} style={stagger(i)}>
                   <td className="px-3 py-2 text-xs text-muted-foreground">{new Date(r.createdAt).toLocaleString('ru-RU')}</td>
                   <td className="px-3 py-2 text-xs text-foreground">{r.actor}</td>
                   <td className="px-3 py-2 font-mono text-xs text-foreground">{r.action}</td>
@@ -323,10 +270,34 @@ function AuditLog() {
   )
 }
 
+/** Точка-индикатор статуса платформенного ключа (проба при импорте). */
+function KeyStatusDot({ status, ping }: { status: string; ping: number | null }) {
+  if (status === 'valid') {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-400" title={ping ? `Рабочий · ${ping} мс` : 'Рабочий'}>
+        <span className="size-1.5 rounded-full bg-emerald-500" />
+        {ping ? `${ping} мс` : 'ок'}
+      </span>
+    )
+  }
+  if (status === 'invalid') {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] text-destructive" title="Проба не прошла">
+        <span className="size-1.5 rounded-full bg-destructive" />
+        не работает
+      </span>
+    )
+  }
+  return <span className="size-1.5 rounded-full bg-muted-foreground/40" title="Не проверялся" />
+}
+
 function PlanKeysManager({ planKey }: { planKey: string }) {
   const [keys, setKeys] = useState<AdminPlanKey[] | null>(null)
-  const [adding, setAdding] = useState(false)
+  const [mode, setMode] = useState<'single' | 'bulk' | null>(null)
   const [form, setForm] = useState({ label: '', key: '', modelId: 'gpt-4o-mini', baseUrl: 'https://api.openai.com/v1' })
+  const [bulk, setBulk] = useState({ label: '', baseUrl: 'https://api.openai.com/v1', models: '', keysText: '' })
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState<PlanKeysImportResult | null>(null)
   const load = async () => setKeys(await listPlanApiKeys(planKey))
   useEffect(() => {
     void load()
@@ -337,8 +308,23 @@ function PlanKeysManager({ planKey }: { planKey: string }) {
     if (!form.key.trim()) return
     await addPlanApiKey({ planKey, ...form })
     setForm({ label: '', key: '', modelId: 'gpt-4o-mini', baseUrl: 'https://api.openai.com/v1' })
-    setAdding(false)
+    setMode(null)
     await load()
+  }
+  const runImport = async () => {
+    if (!bulk.keysText.trim() || importing) return
+    setImporting(true)
+    setImportResult(null)
+    try {
+      const res = await importPlanKeysWithModelProbe({ planKey, ...bulk })
+      if (res) {
+        setImportResult(res)
+        setBulk((b) => ({ ...b, keysText: '' }))
+      }
+      await load()
+    } finally {
+      setImporting(false)
+    }
   }
   const remove = async (id: string) => {
     await deletePlanApiKey(id)
@@ -353,19 +339,21 @@ function PlanKeysManager({ planKey }: { planKey: string }) {
       </div>
       {keys && keys.length > 0 && (
         <ul className="mb-2 flex flex-col gap-1.5">
-          {keys.map((k) => (
-            <li key={k.id} className="flex items-center gap-2 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs">
+          {keys.map((k, i) => (
+            <li key={k.id} className={`flex items-center gap-2 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs ${STAGGER_ROW}`} style={stagger(i)}>
+              <KeyStatusDot status={k.status} ping={k.ping} />
               <span className="font-medium text-foreground">{k.label || k.modelId}</span>
               <span className="font-mono text-muted-foreground">{k.maskedKey}</span>
-              <span className="text-muted-foreground/70">{k.modelId}</span>
-              <button type="button" onClick={() => remove(k.id)} className="ml-auto text-muted-foreground hover:text-destructive">
+              <span className="truncate text-muted-foreground/70">{k.modelId}</span>
+              <button type="button" onClick={() => remove(k.id)} className="ml-auto shrink-0 text-muted-foreground hover:text-destructive">
                 <Trash2 className="size-3.5" />
               </button>
             </li>
           ))}
         </ul>
       )}
-      {adding ? (
+
+      {mode === 'single' && (
         <div className="flex flex-col gap-2 rounded-lg border border-border bg-background p-2.5">
           <div className="grid grid-cols-2 gap-2">
             <input value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="Название (Aura Max)" className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none" />
@@ -374,14 +362,69 @@ function PlanKeysManager({ planKey }: { planKey: string }) {
           <input value={form.key} onChange={(e) => setForm({ ...form, key: e.target.value })} placeholder="API-ключ (sk-…)" className="h-8 rounded-md border border-border bg-background px-2 font-mono text-xs outline-none" />
           <input value={form.baseUrl} onChange={(e) => setForm({ ...form, baseUrl: e.target.value })} placeholder="Base URL" className="h-8 rounded-md border border-border bg-background px-2 font-mono text-xs outline-none" />
           <div className="flex gap-2">
-            <button type="button" onClick={add} disabled={!form.key.trim()} className="rounded-md bg-foreground px-2.5 py-1 text-xs font-medium text-background disabled:opacity-50">Добавить</button>
-            <button type="button" onClick={() => setAdding(false)} className="rounded-md px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground">Отмена</button>
+            <button type="button" onClick={add} disabled={!form.key.trim()} className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">Добавить</button>
+            <button type="button" onClick={() => setMode(null)} className="rounded-md px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground">Отмена</button>
           </div>
         </div>
-      ) : (
-        <button type="button" onClick={() => setAdding(true)} className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground">
-          <KeyRound className="size-3.5" /> Добавить ключ
-        </button>
+      )}
+
+      {mode === 'bulk' && (
+        <div className="flex flex-col gap-2 rounded-lg border border-border bg-background p-2.5">
+          <div className="grid grid-cols-2 gap-2">
+            <input value={bulk.label} onChange={(e) => setBulk({ ...bulk, label: e.target.value })} placeholder="Название партии (Aura Max)" className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none" />
+            <input value={bulk.baseUrl} onChange={(e) => setBulk({ ...bulk, baseUrl: e.target.value })} placeholder="Общий Base URL" className="h-8 rounded-md border border-border bg-background px-2 font-mono text-xs outline-none" />
+          </div>
+          <input
+            value={bulk.models}
+            onChange={(e) => setBulk({ ...bulk, models: e.target.value })}
+            placeholder="Модели-кандидаты через запятую (gpt-4o, gpt-4o-mini) — первая рабочая закрепится"
+            className="h-8 rounded-md border border-border bg-background px-2 font-mono text-xs outline-none"
+          />
+          <textarea
+            value={bulk.keysText}
+            onChange={(e) => setBulk({ ...bulk, keysText: e.target.value })}
+            placeholder={'Ключи — по одному на строку:\nsk-…\nsk-…'}
+            rows={5}
+            className="rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs outline-none"
+          />
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={runImport} disabled={!bulk.keysText.trim() || importing} className="flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
+              {importing && <Loader2 className="size-3 animate-spin" />}
+              {importing ? 'Проверяем модели…' : 'Импортировать и проверить'}
+            </button>
+            <button type="button" onClick={() => { setMode(null); setImportResult(null) }} className="rounded-md px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground">Закрыть</button>
+          </div>
+          {importResult && (
+            <div className="rounded-md border border-border bg-muted/30 p-2 text-[11px]">
+              <p className="font-medium text-foreground">
+                Готово: рабочих {importResult.created}, нерабочих {importResult.failed}
+              </p>
+              <ul className="mt-1 flex flex-col gap-0.5">
+                {importResult.perKey.map((r, i) => (
+                  <li key={i} className="flex flex-wrap items-center gap-1.5">
+                    <span className="font-mono text-muted-foreground">{r.maskedKey}</span>
+                    {r.workingModel ? (
+                      <span className="text-emerald-600 dark:text-emerald-400">→ {r.workingModel}</span>
+                    ) : (
+                      <span className="text-destructive">{r.failReason ?? 'не работает'}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      {mode === null && (
+        <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={() => setMode('single')} className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground">
+            <KeyRound className="size-3.5" /> Добавить ключ
+          </button>
+          <button type="button" onClick={() => setMode('bulk')} className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground">
+            <Upload className="size-3.5" /> Импорт списком
+          </button>
+        </div>
       )}
     </div>
   )
@@ -449,7 +492,7 @@ function PlanCard({ plan, onChanged }: { plan: AdminPlan; onChanged: () => void 
             Показывать пользователям
           </label>
           <div className="flex gap-2">
-            <button type="button" onClick={save} className="rounded-md bg-foreground px-3 py-1.5 text-sm font-medium text-background">Сохранить</button>
+            <button type="button" onClick={save} className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90">Сохранить</button>
             <button type="button" onClick={() => setEdit(false)} className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground">Отмена</button>
           </div>
         </div>
@@ -496,7 +539,7 @@ function PlansTab() {
         {creating ? (
           <div className="flex items-center gap-2">
             <input value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder="ключ (special)" className="h-8 w-32 rounded-md border border-border bg-background px-2 text-sm outline-none" />
-            <button type="button" onClick={create} className="rounded-md bg-foreground px-2.5 py-1 text-xs font-medium text-background">Создать</button>
+            <button type="button" onClick={create} className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90">Создать</button>
             <button type="button" onClick={() => setCreating(false)} className="text-xs text-muted-foreground">Отмена</button>
           </div>
         ) : (
@@ -504,7 +547,11 @@ function PlansTab() {
         )}
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
-        {list.map((p) => <PlanCard key={p.id} plan={p} onChanged={load} />)}
+        {list.map((p, i) => (
+          <div key={p.id} className={STAGGER_ROW} style={stagger(i)}>
+            <PlanCard plan={p} onChanged={load} />
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -571,7 +618,7 @@ function LimitsTab() {
           type="button"
           onClick={save}
           disabled={saving}
-          className="flex items-center gap-2 rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition-all active:scale-95 disabled:opacity-60"
+          className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-all active:scale-95 disabled:opacity-60"
         >
           {saving && <Loader2 className="size-4 animate-spin" />}
           Сохранить
@@ -592,7 +639,9 @@ function StatCard({ label, value, icon }: { label: string; value: string | numbe
         {icon}
         {label}
       </div>
-      <p className="mt-1 text-2xl font-semibold text-foreground">{value}</p>
+      <p className="mt-1 text-2xl font-semibold text-foreground">
+        {typeof value === 'number' ? <AnimatedNumber value={value} /> : value}
+      </p>
     </div>
   )
 }
@@ -623,10 +672,18 @@ function OverviewTab() {
   return (
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label="Пользователи" value={data.totals.users} icon={<Users className="size-3.5" />} />
-        <StatCard label="Гости" value={data.totals.guests} icon={<Users className="size-3.5" />} />
-        <StatCard label="Проекты" value={data.totals.projects} />
-        <StatCard label="Чаты" value={data.totals.chats} />
+        {(
+          [
+            { label: 'Пользователи', value: data.totals.users, icon: <Users className="size-3.5" /> },
+            { label: 'Гости', value: data.totals.guests, icon: <Users className="size-3.5" /> },
+            { label: 'Проекты', value: data.totals.projects },
+            { label: 'Чаты', value: data.totals.chats },
+          ] as { label: string; value: number; icon?: React.ReactNode }[]
+        ).map((s, i) => (
+          <div key={s.label} className={STAGGER_ROW} style={stagger(i)}>
+            <StatCard label={s.label} value={s.value} icon={s.icon} />
+          </div>
+        ))}
       </div>
 
       <div>
@@ -657,8 +714,8 @@ function OverviewTab() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {data.containers.map((c) => (
-                  <tr key={c.name}>
+                {data.containers.map((c, i) => (
+                  <tr key={c.name} className={STAGGER_ROW} style={stagger(i)}>
                     <td className="px-3 py-2 font-mono text-xs text-foreground">{c.name}</td>
                     <td className="px-3 py-2 font-mono text-xs text-muted-foreground">{c.chatId ?? '—'}</td>
                     <td className="px-3 py-2 text-foreground">{c.cpuPerc}</td>
@@ -846,8 +903,8 @@ function UsersTab({ isSuperadmin, adminsOnly }: { isSuperadmin: boolean; adminsO
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {rows.map((u) => (
-                <tr key={u.id} className="hover:bg-accent/40">
+              {rows.map((u, i) => (
+                <tr key={u.id} className={`hover:bg-accent/40 ${STAGGER_ROW}`} style={stagger(i)}>
                   <td className="px-3 py-2">
                     <span className="font-medium text-foreground">{u.name}</span>
                     {u.isAnonymous && <span className="ml-1.5 text-[11px] text-muted-foreground">(гость)</span>}
@@ -881,11 +938,11 @@ function UsersTab({ isSuperadmin, adminsOnly }: { isSuperadmin: boolean; adminsO
       {/* Detail drawer */}
       {(selected || detailLoading) && (
         <div
-          className="fixed inset-0 z-[90] flex justify-end bg-foreground/30"
+          className="fixed inset-0 z-[90] flex justify-end bg-foreground/30 animate-in fade-in duration-200"
           onClick={() => setSelected(null)}
         >
           <div
-            className="h-full w-full max-w-md overflow-y-auto bg-background p-5 shadow-2xl"
+            className="drawer-in h-full w-full max-w-md overflow-y-auto bg-background p-5 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             {detailLoading || !selected ? (
@@ -962,7 +1019,7 @@ function UsersTab({ isSuperadmin, adminsOnly }: { isSuperadmin: boolean; adminsO
                           onClick={() => changeRole(selected.id, r)}
                           className={`rounded-md border px-2 py-1 text-xs transition-colors ${
                             selected.role === r
-                              ? 'border-foreground bg-foreground text-background'
+                              ? 'border-primary bg-primary text-primary-foreground'
                               : 'border-border text-muted-foreground hover:text-foreground'
                           }`}
                         >
