@@ -1,7 +1,7 @@
 import { Suspense } from 'react'
 import { redirect, notFound } from 'next/navigation'
 import { getSession } from '@/lib/session'
-import { getPluginBySlug, getMarketplacePlugins } from '@/app/actions/plugins'
+import { getPluginBySlug, getMarketplacePlugins, getPluginVersions } from '@/app/actions/plugins'
 import { PluginDetailTabs } from '@/components/plugins/plugin-tabs'
 import { cookies } from 'next/headers'
 import type { LanguageCode } from '@/lib/language'
@@ -20,9 +20,10 @@ async function PluginLoader({ params }: { params: Promise<{ slug: string }> }) {
 
   if (!plugin) notFound()
 
+  const versions = await getPluginVersions(plugin.id)
   const lang = (cookieStore.get('aura-language')?.value ?? 'ru') as LanguageCode
 
-  return <PluginDetailTabs plugin={plugin} allPlugins={allPlugins} lang={lang} />
+  return <PluginDetailTabs plugin={plugin} allPlugins={allPlugins} versions={versions} lang={lang} />
 }
 
 function PluginSkeleton() {
@@ -41,7 +42,7 @@ export default function PluginDetailPage(props: {
 }) {
   return (
     <main className="flex-1 min-w-0 overflow-y-auto">
-      <div className="max-w-2xl mx-auto px-6 py-8">
+      <div className="max-w-3xl mx-auto px-6 py-8">
         <Suspense fallback={<PluginSkeleton />}>
           <PluginLoader params={props.params} />
         </Suspense>

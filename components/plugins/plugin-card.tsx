@@ -23,9 +23,25 @@ const ICON_MAP: Record<string, React.ComponentType<LucideProps>> = {
   Puzzle,
 }
 
-function PluginIcon({ name, className }: { name: string; className?: string }) {
+export function PluginIcon({ name, className }: { name: string; className?: string }) {
   const Icon = ICON_MAP[name] ?? Puzzle
   return <Icon className={className} />
+}
+
+/** Чип цены плагина: «Бесплатно» или сумма в рублях. */
+export function PriceChip({ priceRub, lang = 'ru' }: { priceRub: number; lang?: 'ru' | 'en' }) {
+  if (priceRub > 0) {
+    return (
+      <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">
+        {priceRub.toLocaleString('ru-RU')} ₽
+      </span>
+    )
+  }
+  return (
+    <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+      {lang === 'ru' ? 'Бесплатно' : 'Free'}
+    </span>
+  )
 }
 
 export function PluginCard({
@@ -81,6 +97,7 @@ export function PluginCard({
               {plugin.name}
             </Link>
             <PluginBadge scope={plugin.scope} lang={lang} />
+            {plugin.priceRub > 0 && <PriceChip priceRub={plugin.priceRub} lang={lang} />}
           </div>
           <p className="text-xs text-muted-foreground mt-0.5">
             {plugin.author} · v{plugin.version}
