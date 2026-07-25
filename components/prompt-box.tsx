@@ -3,7 +3,6 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
 import useSWR from 'swr'
 import { ArrowUp, MessageCircle, Square } from 'lucide-react'
-import { ProjectSwitcher } from '@/components/project-switcher'
 import { ModelSwitcher } from '@/components/model-switcher'
 import { GithubIconImportDialog } from '@/components/github-import-dialog'
 import { InstructionsPopover } from '@/components/instructions-popover'
@@ -226,7 +225,9 @@ export function PromptBox({
           className="w-full resize-none bg-transparent px-4 pt-4 pb-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
         />
 
-        <div className="flex items-center gap-2 px-3 pb-3">
+        {/* flex-nowrap + min-w-0: в узкой панели чата строка не переносится,
+            имя модели обрезается, микрофон/отправка не съезжают. */}
+        <div className="flex min-w-0 flex-nowrap items-center gap-1.5 px-3 pb-3">
           <AddContentMenu
             generateImages={generateImages}
             onGenerateImagesChange={setGenerateImages}
@@ -281,8 +282,9 @@ export function PromptBox({
             <span className="hidden sm:inline">{t('planMode')}</span>
           </button>
 
-          <div className="ml-auto flex items-center gap-2">
-            <ProjectSwitcher />
+          {/* «Черновик» (ProjectSwitcher) убран — не нужен и ломал строку
+              в узкой панели чата (микрофон съезжал). */}
+          <div className="ml-auto flex shrink-0 items-center gap-2">
             {busy ? (
               <button
                 type="button"

@@ -100,13 +100,13 @@ export function ModelSwitcher({
     <DropdownMenu>
       <DropdownMenuTrigger
         aria-label={t('selectModel')}
-        className="flex items-center gap-1.5 h-8 px-2.5 rounded-md text-sm text-foreground hover:bg-accent transition-colors duration-200 data-[state=open]:bg-accent"
+        className="flex h-8 min-w-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-sm text-foreground transition-colors duration-200 hover:bg-accent data-[state=open]:bg-accent"
       >
-        <Sparkles className="size-3.5" />
-        <span suppressHydrationWarning>
+        <Sparkles className="size-3.5 shrink-0" />
+        <span suppressHydrationWarning className="max-w-28 truncate">
           {mounted ? selected.name : 'Aura Max'}
         </span>
-        <ChevronDown className="size-3.5 text-muted-foreground" />
+        <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
       </DropdownMenuTrigger>
       <DropdownMenuContent
         side="top"

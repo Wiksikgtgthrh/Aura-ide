@@ -41,6 +41,12 @@ export const maxDuration = 300
 // AURA_MODEL_MAP / AURA_MODELS живут в lib/aura-models.ts — общие с
 // селектором моделей и подсказками «что за апишка внутри тира».
 
+// Настроен ли встроенный AI Gateway: ключ в env или OIDC на Vercel-деплое.
+// Без него тиры Aura не должны ломиться в шлюз с гарантированным 401.
+const GATEWAY_CONFIGURED = !!(
+  process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN
+)
+
 // ---- Provider error → human-readable chat message --------------------------
 
 /**
@@ -365,9 +371,21 @@ export async function POST(req: Request) {
       model = planResolved.model
       usedModelName = planResolved.modelName
       bypassDailyLimit = userPlan !== 'free'
-    } else {
+    } else if (GATEWAY_CONFIGURED) {
       model = AURA_MODEL_MAP[modelId]
       usedModelName = AURA_MODEL_MAP[modelId]
+    } else {
+      // Шлюз НЕ настроен (self-host без AI_GATEWAY_API_KEY): не ломимся в
+      // Gateway с гарантированным 401 — честно используем ключ пользователя.
+      const resolved = await getFirstUserKeyModel()
+      if (resolved) {
+        model = resolved.model
+        usedApiKeyId = resolved.keyId
+        usedModelName = resolved.modelName
+      } else {
+        model = AURA_MODEL_MAP[modelId] // упадёт с понятной ошибкой про шлюз
+        usedModelName = AURA_MODEL_MAP[modelId]
+      }
     }
   }
 

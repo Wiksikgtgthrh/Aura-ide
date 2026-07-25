@@ -367,6 +367,20 @@ export function ChatView({
   })
   const playSound = useNotificationSound(prefs?.soundNotifications ?? true)
   const modelRef = useRef<string>('aura-max')
+  // ВАЖНО: инициализируем модель сохранённым выбором пользователя. Раньше
+  // «Повторить» (regenerate) в заново открытом чате уходил с дефолтным
+  // 'aura-max' → ломился в Gateway (401), игнорируя выбранный API-ключ.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('aura-selected-model')
+      if (raw) {
+        const saved = JSON.parse(raw) as { id?: string }
+        if (typeof saved.id === 'string' && saved.id) modelRef.current = saved.id
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [])
   const extrasRef = useRef<Omit<PromptBoxSubmitPayload, 'text' | 'modelId'>>({
     files: [],
     generateImages: true,

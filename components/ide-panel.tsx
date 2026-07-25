@@ -1829,30 +1829,34 @@ export function IdePanel({
               <p className="truncate text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
                 {displayName}
               </p>
+              {/* Кнопки создания — заметные, с нормальной областью клика */}
               <span className="ml-auto flex shrink-0 items-center gap-0.5">
                 <button
                   type="button"
                   title={t('ideNewFile')}
+                  aria-label={t('ideNewFile')}
                   onClick={() => setPendingOp({ kind: 'create-file', parent: '' })}
-                  className="rounded p-1 text-muted-foreground/70 hover:text-foreground transition-colors"
+                  className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 >
-                  <FilePlus className="size-3" />
+                  <FilePlus className="size-4" />
                 </button>
                 <button
                   type="button"
                   title={t('ideNewFolder')}
+                  aria-label={t('ideNewFolder')}
                   onClick={() => setPendingOp({ kind: 'create-folder', parent: '' })}
-                  className="rounded p-1 text-muted-foreground/70 hover:text-foreground transition-colors"
+                  className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 >
-                  <FolderPlus className="size-3" />
+                  <FolderPlus className="size-4" />
                 </button>
                 <button
                   type="button"
                   title={t('ideCollapseAll')}
+                  aria-label={t('ideCollapseAll')}
                   onClick={() => setCollapseEpoch((e) => e + 1)}
-                  className="rounded p-1 text-muted-foreground/70 hover:text-foreground transition-colors"
+                  className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 >
-                  <ChevronsDownUp className="size-3" />
+                  <ChevronsDownUp className="size-4" />
                 </button>
               </span>
             </div>
@@ -1952,7 +1956,18 @@ export function IdePanel({
 
         {/* Main area */}
         <div className="flex min-w-0 flex-1 flex-col">
-          {!hasFiles ? (
+          {showDb ? (
+            /* БД доступна всегда — даже в пустом проекте (подключение MCP). */
+            <div className="flex min-h-0 flex-1 flex-col animate-in fade-in duration-200">
+              <IdeDbTab
+                filePaths={Array.from(localFiles.keys())}
+                onOpenFile={(p) => {
+                  setActiveFile(p)
+                  setTab('code')
+                }}
+              />
+            </div>
+          ) : !hasFiles ? (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
               {busy ? (
                 <>
@@ -2024,7 +2039,7 @@ export function IdePanel({
                 {/* Preview pane — kept MOUNTED (css-hidden on Code tab) so the
                     runtime stays warm and the console keeps streaming. The
                     Live overlay renders on top when the Live tab is active. */}
-                <div className={`relative min-h-0 flex-1 flex-col ${showPreview || showLive || showDb ? 'flex' : 'hidden'}`}>
+                <div className={`relative min-h-0 flex-1 flex-col ${showPreview || showLive ? 'flex' : 'hidden'}`}>
                   {/* Управление превью (обновить/устройство/открыть) живёт в
                       адресной пилюле шапки — здесь только контент. */}
 
@@ -2134,18 +2149,6 @@ export function IdePanel({
                   </div>
                 )}
 
-                {/* База данных — локальная схема проекта + MCP-подключения */}
-                {showDb && (
-                  <div className="absolute inset-0 z-10 flex flex-col bg-background animate-in fade-in duration-200">
-                    <IdeDbTab
-                      filePaths={Array.from(localFiles.keys())}
-                      onOpenFile={(p) => {
-                        setActiveFile(p)
-                        setTab('code')
-                      }}
-                    />
-                  </div>
-                )}
               </div>
 
             </>

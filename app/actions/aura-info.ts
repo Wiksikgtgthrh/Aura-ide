@@ -1,7 +1,7 @@
 'use server'
 
 import { db } from '@/lib/db'
-import { platformApiKeys, userBalance } from '@/lib/db/schema'
+import { apiKeys, platformApiKeys, userBalance } from '@/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { getSession } from '@/lib/session'
 import { AURA_MODELS, AURA_MODEL_MAP, labelMatchesTier } from '@/lib/aura-models'
@@ -74,6 +74,26 @@ export async function getAuraTiersInfo(): Promise<AuraTierInfo[]> {
     }
   }
 
+  // Фолбэк без ключей тарифа: настроен ли встроенный шлюз, а если нет —
+  // какой СВОЙ ключ пользователя реально будет использован (self-host).
+  const gatewayConfigured = !!(
+    process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN
+  )
+  let firstKeyName: string | null = null
+  if (!gatewayConfigured && userId) {
+    try {
+      const [k] = await db
+        .select({ name: apiKeys.name })
+        .from(apiKeys)
+        .where(eq(apiKeys.userId, userId))
+        .orderBy(apiKeys.createdAt)
+        .limit(1)
+      firstKeyName = k?.name ?? null
+    } catch {
+      /* ignore */
+    }
+  }
+
   return AURA_MODELS.map((tier) => {
     const pool = rows.filter(
       (r) => labelMatchesTier(r.label, tier.id) && (r.status ?? 'unknown') !== 'invalid',
@@ -88,12 +108,30 @@ export async function getAuraTiersInfo(): Promise<AuraTierInfo[]> {
       return { id: tier.id, name: tier.name, source: 'plan' as const, subtitle, tooltip }
     }
     const gw = AURA_MODEL_MAP[tier.id]
+    if (gatewayConfigured) {
+      return {
+        id: tier.id,
+        name: tier.name,
+        source: 'builtin' as const,
+        subtitle: gw,
+        tooltip: `Встроенная модель (шлюз Aura): ${gw}. Дневной лимит бесплатных запросов.`,
+      }
+    }
+    if (firstKeyName) {
+      return {
+        id: tier.id,
+        name: tier.name,
+        source: 'builtin' as const,
+        subtitle: `→ ваш ключ «${firstKeyName}»`,
+        tooltip: `Встроенный шлюз не настроен — тир использует ваш API-ключ «${firstKeyName}».`,
+      }
+    }
     return {
       id: tier.id,
       name: tier.name,
       source: 'builtin' as const,
-      subtitle: gw,
-      tooltip: `Встроенная модель (шлюз Aura): ${gw}. Дневной лимит бесплатных запросов.`,
+      subtitle: 'нужен API-ключ',
+      tooltip: 'Встроенный шлюз не настроен и своих ключей нет — добавьте ключ в «Мои API».',
     }
   })
 }
