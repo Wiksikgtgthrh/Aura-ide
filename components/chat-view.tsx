@@ -1208,16 +1208,40 @@ export function ChatView({
                     </span>
                   )
                 })()}
-                {/* Retry the failed request without retyping */}
+                {/* Retry / continue the failed request without retyping */}
                 {!(error?.message ?? '').includes('rate_limit') && (
-                  <button
-                    type="button"
-                    onClick={() => regenerate()}
-                    className="mt-2 flex items-center gap-1.5 rounded-md border border-destructive/40 bg-background px-2.5 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 active:scale-95 transition-all"
-                  >
-                    <RotateCcw className="size-3" />
-                    {t('retry')}
-                  </button>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => regenerate()}
+                      className="flex items-center gap-1.5 rounded-md border border-destructive/40 bg-background px-2.5 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 active:scale-95 transition-all"
+                    >
+                      <RotateCcw className="size-3" />
+                      {t('retry')}
+                    </button>
+                    {/* «Продолжить»: ответ оборвался, но часть уже пришла —
+                        модель допишет с места обрыва, не пересоздавая готовое. */}
+                    {!readOnly &&
+                      (() => {
+                        const lastAssistant = [...messages]
+                          .reverse()
+                          .find((m) => m.role === 'assistant')
+                        const hadPartial = !!lastAssistant?.parts?.some((p) => {
+                          const text = (p as { type?: string; text?: string }).text
+                          return p.type === 'text' && typeof text === 'string' && text.trim().length > 0
+                        })
+                        return hadPartial ? (
+                          <button
+                            type="button"
+                            onClick={() => sendMessage({ text: t('continuePrompt') })}
+                            className="flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/5 px-2.5 py-1 text-xs font-medium text-primary hover:bg-primary/10 active:scale-95 transition-all"
+                          >
+                            <Play className="size-3" />
+                            Продолжить генерацию
+                          </button>
+                        ) : null
+                      })()}
+                  </div>
                 )}
               </div>
             )}

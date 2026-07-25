@@ -419,6 +419,7 @@ export function buildPreviewBootstrapHtml(): string {
   }, true);
   document.addEventListener('click', function (e) {
     if (!designMode) return;
+    if (editingEl) return; // идёт инлайн-правка текста — не перехватываем клики
     e.preventDefault();
     e.stopPropagation();
     var el = e.target;
@@ -433,6 +434,54 @@ export function buildPreviewBootstrapHtml(): string {
         path: cssPath(el)
       }
     });
+  }, true);
+
+  // ---------- инлайн-правка текста (режим «Дизайн») ----------
+  // Двойной клик по текстовому элементу превращает его в contenteditable;
+  // Enter/blur фиксируют правку и отправляют родителю (IDE подменит текст
+  // прямо в исходном файле), Escape отменяет.
+  var editingEl = null, editOldText = '';
+  document.addEventListener('dblclick', function (e) {
+    if (!designMode || editingEl) return;
+    var el = e.target;
+    if (!el || el.nodeType !== 1) return;
+    if (el.children && el.children.length > 0) return; // только «листья» с текстом
+    var txt = (el.textContent || '').trim();
+    if (txt.length < 2 || txt.length > 500) return;
+    e.preventDefault();
+    e.stopPropagation();
+    clearHover();
+    editingEl = el;
+    editOldText = txt;
+    try { el.setAttribute('contenteditable', 'plaintext-only'); } catch (err) { el.setAttribute('contenteditable', 'true'); }
+    el.style.outline = '2px solid #22c55e';
+    el.style.cursor = 'text';
+    el.focus();
+    try { document.execCommand('selectAll', false, null); } catch (err) {}
+    function finish(commit) {
+      if (!editingEl) return;
+      var target = editingEl;
+      var newText = (target.textContent || '').trim();
+      target.removeAttribute('contenteditable');
+      target.style.outline = '';
+      target.style.cursor = '';
+      editingEl = null;
+      target.removeEventListener('blur', onBlur, true);
+      target.removeEventListener('keydown', onKey, true);
+      if (commit && newText && newText !== editOldText) {
+        post({ type: 'text-edited', oldText: editOldText, newText: newText });
+      } else if (!commit) {
+        target.textContent = editOldText;
+      }
+    }
+    function onBlur() { finish(true); }
+    function onKey(ev) {
+      if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+      ev.stopPropagation();
+    }
+    el.addEventListener('blur', onBlur, true);
+    el.addEventListener('keydown', onKey, true);
   }, true);
 
   // ---------- messages ----------

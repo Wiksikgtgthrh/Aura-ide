@@ -2,9 +2,10 @@
 
 import { and, eq } from 'drizzle-orm'
 import { db } from '@/lib/db'
-import { userSecrets } from '@/lib/db/schema'
+import { chats, userSecrets } from '@/lib/db/schema'
 import { decryptSecret } from '@/lib/crypto'
 import { getSession } from '@/lib/session'
+import { loadProjectFiles } from '@/lib/chat-store'
 
 /**
  * Publish the scaffolded project to the user's GitHub account.
@@ -220,5 +221,176 @@ export async function publishToGithub(input: PublishInput): Promise<PublishResul
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return { ok: false, error: `Network error while talking to GitHub: ${msg}` }
+  }
+}
+
+// ---- Синхронизация проекта с GitHub (итерация 3, пункт №9) ------------------
+//
+// Проект (чат) привязывается к существующему репозиторию «owner/repo», после
+// чего изменения ИИ/пользователя коммитятся в него в один клик из меню
+// проекта. Токен — тот же PAT из Настройки → Интеграции (user_secrets).
+
+const REPO_RE = /^[\w.-]+\/[\w.-]+$/
+
+async function getGithubToken(userId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ secret: userSecrets.secret })
+    .from(userSecrets)
+    .where(and(eq(userSecrets.userId, userId), eq(userSecrets.provider, 'github')))
+    .limit(1)
+  if (!row) return null
+  try {
+    return decryptSecret(row.secret)
+  } catch {
+    return null
+  }
+}
+
+/** Привязанный репозиторий чата ('' = не привязан; устойчиво к немигрированной БД). */
+export async function getChatGithubRepo(chatId: string): Promise<string> {
+  const session = await getSession()
+  if (!session?.user) return ''
+  try {
+    const [row] = await db
+      .select({ githubRepo: chats.githubRepo })
+      .from(chats)
+      .where(and(eq(chats.id, chatId), eq(chats.userId, session.user.id)))
+      .limit(1)
+    return row?.githubRepo ?? ''
+  } catch {
+    return '' // колонка ещё не создана (pnpm migrate:admin)
+  }
+}
+
+/** Привязать/отвязать репозиторий («owner/repo», пустая строка = отвязать). */
+export async function linkChatGithubRepo(
+  chatId: string,
+  repo: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const session = await getSession()
+  if (!session?.user) return { ok: false, error: 'Unauthorized' }
+  const value = repo.trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '').slice(0, 140)
+  if (value && !REPO_RE.test(value)) {
+    return { ok: false, error: 'Формат: owner/repo (или ссылка на GitHub)' }
+  }
+  try {
+    await db
+      .update(chats)
+      .set({ githubRepo: value })
+      .where(and(eq(chats.id, chatId), eq(chats.userId, session.user.id)))
+    return { ok: true }
+  } catch {
+    return { ok: false, error: 'Схема не мигрирована — выполните pnpm migrate:admin' }
+  }
+}
+
+export type SyncResult =
+  | { ok: true; commitUrl: string; files: number }
+  | { ok: false; error: string }
+
+/**
+ * Закоммитить ТЕКУЩЕЕ состояние проекта (виртуальная ФС из БД) в привязанный
+ * репозиторий одним коммитом: tree → commit → fast-forward ветки.
+ */
+export async function syncChatToGithub(
+  chatId: string,
+  commitMessage: string,
+): Promise<SyncResult> {
+  const session = await getSession()
+  if (!session?.user) return { ok: false, error: 'Unauthorized' }
+
+  const repoFull = await getChatGithubRepo(chatId)
+  if (!repoFull) return { ok: false, error: 'Репозиторий не привязан' }
+  const [owner, repoName] = repoFull.split('/')
+
+  const token = await getGithubToken(session.user.id)
+  if (!token) {
+    return { ok: false, error: 'Нет GitHub-токена — добавьте его в Настройки → Интеграции' }
+  }
+
+  // Файлы проекта — серверная истина (виртуальная ФС, включая ручные правки).
+  const filesMap = await loadProjectFiles(chatId)
+  const fileEntries = Object.entries(filesMap).filter(
+    ([p, c]) => p && typeof c === 'string',
+  )
+  if (fileEntries.length === 0) return { ok: false, error: 'В проекте пока нет файлов' }
+  const totalSize = fileEntries.reduce((n, [, c]) => n + c.length, 0)
+  if (totalSize > 3_000_000) return { ok: false, error: 'Проект слишком большой (>3 МБ)' }
+
+  try {
+    // Ветка по умолчанию.
+    const repoInfo = await gh<{ default_branch?: string; message?: string }>(
+      token,
+      'GET',
+      `/repos/${owner}/${repoName}`,
+    )
+    if (repoInfo.status === 404) return { ok: false, error: `Репозиторий ${repoFull} не найден (или нет доступа у токена)` }
+    if (repoInfo.status !== 200) {
+      return { ok: false, error: `GitHub: ${repoInfo.data.message ?? repoInfo.status}` }
+    }
+    const branch = repoInfo.data.default_branch ?? 'main'
+
+    // HEAD ветки.
+    const ref = await gh<{ object?: { sha?: string }; message?: string }>(
+      token,
+      'GET',
+      `/repos/${owner}/${repoName}/git/ref/heads/${branch}`,
+    )
+    const headSha = ref.data.object?.sha
+    if (!headSha) return { ok: false, error: `Ветка ${branch} не найдена: ${ref.data.message ?? ref.status}` }
+
+    const headCommit = await gh<{ tree?: { sha?: string } }>(
+      token,
+      'GET',
+      `/repos/${owner}/${repoName}/git/commits/${headSha}`,
+    )
+
+    // Одно дерево со всеми файлами проекта поверх текущего.
+    const tree = await gh<{ sha?: string; message?: string }>(
+      token,
+      'POST',
+      `/repos/${owner}/${repoName}/git/trees`,
+      {
+        base_tree: headCommit.data.tree?.sha,
+        tree: fileEntries.map(([path, content]) => ({
+          path: path.replace(/^\/+/, ''),
+          mode: path.endsWith('.sh') ? '100755' : '100644',
+          type: 'blob',
+          content,
+        })),
+      },
+    )
+    if (!tree.data.sha) return { ok: false, error: `Не собралось git-дерево: ${tree.data.message ?? tree.status}` }
+
+    const commit = await gh<{ sha?: string; message?: string }>(
+      token,
+      'POST',
+      `/repos/${owner}/${repoName}/git/commits`,
+      {
+        message: (commitMessage.trim() || 'Изменения из Aura IDE').slice(0, 200),
+        tree: tree.data.sha,
+        parents: [headSha],
+      },
+    )
+    if (!commit.data.sha) return { ok: false, error: `Коммит не создался: ${commit.data.message ?? commit.status}` }
+
+    const refUpdate = await gh<{ message?: string }>(
+      token,
+      'PATCH',
+      `/repos/${owner}/${repoName}/git/refs/heads/${branch}`,
+      { sha: commit.data.sha, force: false },
+    )
+    if (refUpdate.status !== 200) {
+      return { ok: false, error: `Ветка не сдвинулась: ${refUpdate.data.message ?? refUpdate.status}` }
+    }
+
+    return {
+      ok: true,
+      commitUrl: `https://github.com/${owner}/${repoName}/commit/${commit.data.sha}`,
+      files: fileEntries.length,
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { ok: false, error: `Сетевая ошибка GitHub: ${msg}` }
   }
 }

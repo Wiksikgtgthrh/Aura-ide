@@ -144,6 +144,10 @@ async function main() {
   `
   console.log('  ✓ plugins.longDescription/donateAuthors/media + plugin_versions')
 
+  // 9) Синхронизация проекта с GitHub: привязанный репозиторий «owner/repo».
+  await sql`ALTER TABLE chats ADD COLUMN IF NOT EXISTS "githubRepo" text NOT NULL DEFAULT ''`
+  console.log('  ✓ chats.githubRepo')
+
   console.log('Done. Admin schema is ready.')
 }
 

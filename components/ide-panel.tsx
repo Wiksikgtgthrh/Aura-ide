@@ -63,6 +63,8 @@ import {
   restoreCheckpoint,
 } from '@/app/actions/checkpoints'
 import { deleteChat, duplicateChat, renameChat } from '@/app/actions/chats'
+import { getChatGithubRepo, linkChatGithubRepo, syncChatToGithub } from '@/app/actions/publish'
+import { GithubLogo } from '@/components/icons/github-logo'
 import { downloadZip } from '@/lib/zip'
 import { parseAnsi } from '@/lib/ansi'
 import type { CheckpointListItem } from '@/lib/chat-store'
@@ -830,6 +832,44 @@ export function IdePanel({
   const [renameValue, setRenameValue] = useState('')
   const [deleteOpen, setDeleteOpen] = useState(false)
 
+  // ---- GitHub-синхронизация проекта (привязка + коммит в один клик) --------
+  const [ghRepo, setGhRepo] = useState('')
+  const [ghLinkOpen, setGhLinkOpen] = useState(false)
+  const [ghRepoInput, setGhRepoInput] = useState('')
+  const [ghCommitOpen, setGhCommitOpen] = useState(false)
+  const [ghCommitMsg, setGhCommitMsg] = useState('')
+  const [ghBusy, setGhBusy] = useState(false)
+  const [ghError, setGhError] = useState('')
+  const [ghDone, setGhDone] = useState<string | null>(null)
+  useEffect(() => {
+    if (!chatId) return
+    void getChatGithubRepo(chatId).then(setGhRepo).catch(() => {})
+  }, [chatId])
+  const saveGhLink = async () => {
+    if (!chatId || ghBusy) return
+    setGhBusy(true)
+    setGhError('')
+    const res = await linkChatGithubRepo(chatId, ghRepoInput)
+    if (res.ok) {
+      const fresh = await getChatGithubRepo(chatId)
+      setGhRepo(fresh)
+      setGhLinkOpen(false)
+    } else {
+      setGhError(res.error ?? 'Ошибка')
+    }
+    setGhBusy(false)
+  }
+  const commitToGithub = async () => {
+    if (!chatId || ghBusy) return
+    setGhBusy(true)
+    setGhError('')
+    setGhDone(null)
+    const res = await syncChatToGithub(chatId, ghCommitMsg)
+    setGhBusy(false)
+    if (res.ok) setGhDone(res.commitUrl)
+    else setGhError(res.error)
+  }
+
   const handleRenameProject = () => {
     setRenameValue(displayName)
     setRenameOpen(true)
@@ -1092,6 +1132,37 @@ export function IdePanel({
     )
   }, [])
 
+  // Инлайн-правка текста из превью (режим «Дизайн», двойной клик): находим
+  // УНИКАЛЬНОЕ вхождение старого текста в файлах и подменяем прямо в коде.
+  const applyPreviewTextEdit = useCallback(
+    (oldText: string, newText: string) => {
+      let target: string | null = null
+      let occurrences = 0
+      for (const [path, content] of filesRef.current) {
+        let idx = content.indexOf(oldText)
+        while (idx !== -1) {
+          occurrences++
+          target = path
+          idx = content.indexOf(oldText, idx + oldText.length)
+        }
+      }
+      if (occurrences === 1 && target) {
+        const path = target
+        setLocalFiles((prev) => {
+          const next = new Map(prev)
+          next.set(path, (next.get(path) ?? '').replace(oldText, newText))
+          return next
+        })
+        appendEntry('info', `✏️ Текст обновлён в ${path}: «${oldText.slice(0, 48)}» → «${newText.slice(0, 48)}»`)
+      } else if (occurrences === 0) {
+        appendEntry('warn', `Не нашёл «${oldText.slice(0, 60)}» в коде (текст, вероятно, собирается динамически) — попросите ИИ изменить его`)
+      } else {
+        appendEntry('warn', `«${oldText.slice(0, 48)}» встречается в коде ${occurrences} раз — правка неоднозначна, попросите ИИ`)
+      }
+    },
+    [appendEntry],
+  )
+
   // Listen for messages from the preview iframe
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -1105,6 +1176,9 @@ export function IdePanel({
         appendEntry(data.level as PreviewConsoleLevel, String(data.text ?? ''))
       } else if (data.type === 'eval-result') {
         appendEntry(data.ok ? 'result' : 'error', String(data.text ?? ''), 'term')
+      } else if (data.type === 'text-edited' && typeof data.oldText === 'string' && typeof data.newText === 'string') {
+        // Двойной клик по тексту в превью → правка исходника без промпта.
+        applyPreviewTextEdit(String(data.oldText), String(data.newText))
       } else if (data.type === 'element-selected' && data.element) {
         // Design mode: the user picked an element in the preview
         onElementSelect?.(data.element as SelectedElement)
@@ -1816,6 +1890,50 @@ export function IdePanel({
                 </DropdownMenuItem>
               </DropdownMenuGroup>
               <DropdownMenuSeparator />
+              {/* GitHub-синхронизация: привязка репозитория + коммит в один клик */}
+              <DropdownMenuGroup>
+                {ghRepo ? (
+                  <>
+                    <DropdownMenuItem
+                      className="gap-2.5"
+                      disabled={localFiles.size === 0}
+                      onClick={() => {
+                        setGhCommitMsg('')
+                        setGhError('')
+                        setGhDone(null)
+                        setGhCommitOpen(true)
+                      }}
+                    >
+                      <GithubLogo className="size-4" />
+                      <span className="truncate">Коммит в {ghRepo}</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      className="gap-2.5"
+                      onClick={() => {
+                        setGhRepoInput(ghRepo)
+                        setGhError('')
+                        setGhLinkOpen(true)
+                      }}
+                    >
+                      <Pencil className="size-4" />
+                      Изменить GitHub-репо
+                    </DropdownMenuItem>
+                  </>
+                ) : (
+                  <DropdownMenuItem
+                    className="gap-2.5"
+                    onClick={() => {
+                      setGhRepoInput('')
+                      setGhError('')
+                      setGhLinkOpen(true)
+                    }}
+                  >
+                    <GithubLogo className="size-4" />
+                    Подключить GitHub-репо
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
               <DropdownMenuItem
                 className="gap-2.5 text-destructive"
                 onClick={() => setDeleteOpen(true)}
@@ -2473,6 +2591,120 @@ export function IdePanel({
               >
                 {t('save')}
               </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* GitHub: привязка репозитория */}
+      {ghLinkOpen && (
+        <div
+          className="fixed inset-0 z-[95] flex items-center justify-center bg-foreground/30 p-4 animate-in fade-in duration-150"
+          onClick={() => setGhLinkOpen(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-xl border border-border bg-background p-4 shadow-2xl animate-in fade-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="flex items-center gap-2 text-sm font-medium text-foreground">
+              <GithubLogo className="size-4" />
+              GitHub-репозиторий проекта
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground text-pretty">
+              Изменения будут коммититься в ветку по умолчанию. Нужен токен со
+              scope «repo» в Настройки → Интеграции.
+            </p>
+            <input
+              value={ghRepoInput}
+              autoFocus
+              maxLength={140}
+              placeholder="owner/repo или ссылка на GitHub"
+              onChange={(e) => setGhRepoInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void saveGhLink()
+                if (e.key === 'Escape') setGhLinkOpen(false)
+              }}
+              className="mt-3 h-9 w-full rounded-md border border-border bg-background px-3 font-mono text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"
+            />
+            {ghError && <p className="mt-2 text-xs text-destructive">{ghError}</p>}
+            <div className="mt-3 flex items-center justify-end gap-2">
+              {ghRepo && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="mr-auto text-destructive hover:text-destructive"
+                  disabled={ghBusy}
+                  onClick={async () => {
+                    setGhRepoInput('')
+                    if (chatId) await linkChatGithubRepo(chatId, '')
+                    setGhRepo('')
+                    setGhLinkOpen(false)
+                  }}
+                >
+                  Отвязать
+                </Button>
+              )}
+              <Button size="sm" variant="ghost" onClick={() => setGhLinkOpen(false)}>
+                {t('cancel')}
+              </Button>
+              <Button size="sm" disabled={ghBusy || !ghRepoInput.trim()} onClick={() => void saveGhLink()}>
+                {ghBusy ? <Loader2 className="size-3.5 animate-spin" /> : 'Сохранить'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* GitHub: коммит текущего состояния проекта */}
+      {ghCommitOpen && (
+        <div
+          className="fixed inset-0 z-[95] flex items-center justify-center bg-foreground/30 p-4 animate-in fade-in duration-150"
+          onClick={() => !ghBusy && setGhCommitOpen(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-xl border border-border bg-background p-4 shadow-2xl animate-in fade-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="flex items-center gap-2 text-sm font-medium text-foreground">
+              <GithubLogo className="size-4" />
+              Коммит в <span className="font-mono text-xs">{ghRepo}</span>
+            </p>
+            <input
+              value={ghCommitMsg}
+              autoFocus
+              maxLength={200}
+              placeholder="Сообщение коммита (Изменения из Aura IDE)"
+              onChange={(e) => setGhCommitMsg(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void commitToGithub()
+                if (e.key === 'Escape' && !ghBusy) setGhCommitOpen(false)
+              }}
+              className="mt-3 h-9 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"
+            />
+            {ghError && <p className="mt-2 text-xs text-destructive text-pretty">{ghError}</p>}
+            {ghDone && (
+              <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">
+                Готово!{' '}
+                <a href={ghDone} target="_blank" rel="noopener noreferrer" className="underline">
+                  Открыть коммит на GitHub
+                </a>
+              </p>
+            )}
+            <div className="mt-3 flex justify-end gap-2">
+              <Button size="sm" variant="ghost" disabled={ghBusy} onClick={() => setGhCommitOpen(false)}>
+                {ghDone ? 'Закрыть' : t('cancel')}
+              </Button>
+              {!ghDone && (
+                <Button size="sm" disabled={ghBusy} onClick={() => void commitToGithub()}>
+                  {ghBusy ? (
+                    <span className="flex items-center gap-1.5">
+                      <Loader2 className="size-3.5 animate-spin" /> Коммитим…
+                    </span>
+                  ) : (
+                    'Закоммитить'
+                  )}
+                </Button>
+              )}
             </div>
           </div>
         </div>

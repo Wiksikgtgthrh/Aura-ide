@@ -196,6 +196,9 @@ export const chats = pgTable('chats', {
   favorite: boolean('favorite').notNull().default(false),
   // 'html' = classic single-file HTML preview, 'ide' = TSX multi-file IDE
   mode: text('mode').notNull().default('html'),
+  // Привязанный GitHub-репозиторий «owner/repo» для синхронизации из IDE
+  // (added by migrate-admin; '' = не привязан).
+  githubRepo: text('githubRepo').notNull().default(''),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
   updatedAt: timestamp('updatedAt').notNull().defaultNow(),
 })
