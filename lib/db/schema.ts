@@ -196,9 +196,11 @@ export const chats = pgTable('chats', {
   favorite: boolean('favorite').notNull().default(false),
   // 'html' = classic single-file HTML preview, 'ide' = TSX multi-file IDE
   mode: text('mode').notNull().default('html'),
-  // Привязанный GitHub-репозиторий «owner/repo» для синхронизации из IDE
-  // (added by migrate-admin; '' = не привязан).
-  githubRepo: text('githubRepo').notNull().default(''),
+  // ВНИМАНИЕ: колонка chats."githubRepo" (миграция №9 в migrate-admin)
+  // НАМЕРЕННО не описана в drizzle-схеме: иначе она попадает во ВСЕ
+  // insert'ы в chats и до миграции ломает создание/дублирование чатов
+  // («column githubRepo does not exist»). GitHub-экшены работают с ней
+  // через raw SQL с мягкой деградацией (app/actions/publish.ts).
   createdAt: timestamp('createdAt').notNull().defaultNow(),
   updatedAt: timestamp('updatedAt').notNull().defaultNow(),
 })

@@ -1,8 +1,8 @@
 'use server'
 
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { db } from '@/lib/db'
-import { chats, userSecrets } from '@/lib/db/schema'
+import { userSecrets } from '@/lib/db/schema'
 import { decryptSecret } from '@/lib/crypto'
 import { getSession } from '@/lib/session'
 import { loadProjectFiles } from '@/lib/chat-store'
@@ -246,17 +246,19 @@ async function getGithubToken(userId: string): Promise<string | null> {
   }
 }
 
-/** Привязанный репозиторий чата ('' = не привязан; устойчиво к немигрированной БД). */
+/**
+ * Привязанный репозиторий чата ('' = не привязан). Колонка chats."githubRepo"
+ * НАМЕРЕННО не в drizzle-схеме (см. комментарий в lib/db/schema.ts) — читаем
+ * raw SQL с мягкой деградацией на немигрированной БД.
+ */
 export async function getChatGithubRepo(chatId: string): Promise<string> {
   const session = await getSession()
   if (!session?.user) return ''
   try {
-    const [row] = await db
-      .select({ githubRepo: chats.githubRepo })
-      .from(chats)
-      .where(and(eq(chats.id, chatId), eq(chats.userId, session.user.id)))
-      .limit(1)
-    return row?.githubRepo ?? ''
+    const res = (await db.execute(
+      sql`SELECT "githubRepo" AS repo FROM chats WHERE id = ${chatId} AND "userId" = ${session.user.id} LIMIT 1`,
+    )) as unknown as { rows?: Array<{ repo?: string | null }> }
+    return res.rows?.[0]?.repo ?? ''
   } catch {
     return '' // колонка ещё не создана (pnpm migrate:admin)
   }
@@ -274,10 +276,9 @@ export async function linkChatGithubRepo(
     return { ok: false, error: 'Формат: owner/repo (или ссылка на GitHub)' }
   }
   try {
-    await db
-      .update(chats)
-      .set({ githubRepo: value })
-      .where(and(eq(chats.id, chatId), eq(chats.userId, session.user.id)))
+    await db.execute(
+      sql`UPDATE chats SET "githubRepo" = ${value} WHERE id = ${chatId} AND "userId" = ${session.user.id}`,
+    )
     return { ok: true }
   } catch {
     return { ok: false, error: 'Схема не мигрирована — выполните pnpm migrate:admin' }
