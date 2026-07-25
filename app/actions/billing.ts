@@ -1,8 +1,8 @@
 'use server'
 
 import { db } from '@/lib/db'
-import { userBalance, referrals, transactions, user } from '@/lib/db/schema'
-import { eq, desc } from 'drizzle-orm'
+import { userBalance, referrals, transactions, user, plans } from '@/lib/db/schema'
+import { asc, eq, desc } from 'drizzle-orm'
 import { revalidatePath, revalidateTag, unstable_cache } from 'next/cache'
 import { getSession } from '@/lib/session'
 
@@ -14,7 +14,7 @@ async function requireUserId(): Promise<string> {
 
 export type UserBalance = {
   balance: number
-  plan: 'free' | 'pro' | 'team'
+  plan: string
   planExpiresAt: string | null
   referralCode: string
 }
@@ -127,25 +127,82 @@ export async function getBillingData(): Promise<BillingData> {
   )()
 }
 
-export async function changePlan(plan: 'free' | 'pro' | 'team'): Promise<void> {
+/** Публичный список тарифов из админки (видимые, по порядку). */
+export type PublicPlan = {
+  key: string
+  title: string
+  priceRub: number
+  features: string[]
+  copy: string
+}
+
+export async function getVisiblePlans(): Promise<PublicPlan[] | null> {
+  try {
+    const rows = await db
+      .select({
+        key: plans.key,
+        title: plans.title,
+        priceRub: plans.priceRub,
+        features: plans.features,
+        copy: plans.copy,
+        visible: plans.visible,
+      })
+      .from(plans)
+      .orderBy(asc(plans.position))
+    const visible = rows.filter((r) => r.visible)
+    if (visible.length === 0) return null
+    return visible.map((r) => ({
+      key: r.key,
+      title: r.title || r.key,
+      priceRub: r.priceRub ?? 0,
+      features: Array.isArray(r.features) ? (r.features as string[]).filter(Boolean) : [],
+      copy: r.copy ?? '',
+    }))
+  } catch {
+    return null // таблицы plans нет (немигрированная БД) — хардкод-фолбэк в UI
+  }
+}
+
+export async function changePlan(plan: string): Promise<void> {
   const userId = await requireUserId()
   await upsertBalance(userId)
 
-  const planExpiresAt = plan === 'free' ? null : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+  const key = plan.trim().toLowerCase().slice(0, 40)
+  // Разрешаем только реальные тарифы: из админки (plans) или базовую тройку.
+  let priceRub = 0
+  let title = key
+  const dbPlans = await getVisiblePlans()
+  if (dbPlans) {
+    const found = dbPlans.find((p) => p.key === key)
+    if (!found) throw new Error('Unknown plan')
+    priceRub = found.priceRub
+    title = found.title
+  } else {
+    const fallback: Record<string, { price: number; title: string }> = {
+      free: { price: 0, title: 'Free' },
+      pro: { price: 990, title: 'Pro' },
+      team: { price: 2490, title: 'Team' },
+    }
+    const found = fallback[key]
+    if (!found) throw new Error('Unknown plan')
+    priceRub = found.price
+    title = found.title
+  }
+
+  const planExpiresAt = key === 'free' ? null : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
 
   await db
     .update(userBalance)
-    .set({ plan, planExpiresAt, updatedAt: new Date() })
+    .set({ plan: key, planExpiresAt, updatedAt: new Date() })
     .where(eq(userBalance.userId, userId))
 
   // Record transaction
-  const planPrices: Record<string, number> = { free: 0, pro: -990, team: -2490 }
-  if (plan !== 'free') {
+  if (key !== 'free' && priceRub > 0) {
     await db.insert(transactions).values({
       userId,
       type: 'plan_purchase',
-      amount: planPrices[plan],
-      description: `Подписка ${plan === 'pro' ? 'Pro' : 'Team'} — 1 месяц`,
+      amount: -priceRub,
+      description: `Подписка ${title} — 1 месяц`,
     })
   }
 

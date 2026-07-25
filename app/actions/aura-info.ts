@@ -5,6 +5,7 @@ import { apiKeys, platformApiKeys, userBalance } from '@/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { getSession } from '@/lib/session'
 import { AURA_MODELS, AURA_MODEL_MAP, labelMatchesTier } from '@/lib/aura-models'
+import { getLimits } from '@/lib/platform-settings'
 
 /**
  * «Что за апишка внутри тира» — инфа для селектора моделей: по каждому тиру
@@ -94,14 +95,28 @@ export async function getAuraTiersInfo(): Promise<AuraTierInfo[]> {
     }
   }
 
+  // Кастомные подписи тиров из админки (Лимиты → «Модели Aura»).
+  let customLabels: Record<string, string | undefined> = {}
+  try {
+    const limits = await getLimits()
+    customLabels = Object.fromEntries(
+      Object.entries(limits.auraTiers ?? {}).map(([k, v]) => [k, v.label]),
+    )
+  } catch {
+    /* настройки недоступны */
+  }
+  const withCustom = (tierId: string, computed: string) => customLabels[tierId] || computed
+
   return AURA_MODELS.map((tier) => {
     const pool = rows.filter(
       (r) => labelMatchesTier(r.label, tier.id) && (r.status ?? 'unknown') !== 'invalid',
     )
     if (pool.length > 0) {
       const models = Array.from(new Set(pool.map((r) => r.modelId)))
-      const subtitle =
-        models[0] + (pool.length > 1 ? ` · ${pluralKeys(pool.length)}` : '')
+      const subtitle = withCustom(
+        tier.id,
+        models[0] + (pool.length > 1 ? ` · ${pluralKeys(pool.length)}` : ''),
+      )
       const tooltip =
         `Тариф «${plan}» — ${pluralKeys(pool.length)}: ` +
         pool.map((r) => `${r.label} → ${r.modelId}`).join(', ')
@@ -113,7 +128,7 @@ export async function getAuraTiersInfo(): Promise<AuraTierInfo[]> {
         id: tier.id,
         name: tier.name,
         source: 'builtin' as const,
-        subtitle: gw,
+        subtitle: withCustom(tier.id, gw),
         tooltip: `Встроенная модель (шлюз Aura): ${gw}. Дневной лимит бесплатных запросов.`,
       }
     }
@@ -122,7 +137,7 @@ export async function getAuraTiersInfo(): Promise<AuraTierInfo[]> {
         id: tier.id,
         name: tier.name,
         source: 'builtin' as const,
-        subtitle: `→ ваш ключ «${firstKeyName}»`,
+        subtitle: withCustom(tier.id, `→ ваш ключ «${firstKeyName}»`),
         tooltip: `Встроенный шлюз не настроен — тир использует ваш API-ключ «${firstKeyName}».`,
       }
     }
@@ -130,7 +145,7 @@ export async function getAuraTiersInfo(): Promise<AuraTierInfo[]> {
       id: tier.id,
       name: tier.name,
       source: 'builtin' as const,
-      subtitle: 'нужен API-ключ',
+      subtitle: withCustom(tier.id, 'нужен API-ключ'),
       tooltip: 'Встроенный шлюз не настроен и своих ключей нет — добавьте ключ в «Мои API».',
     }
   })

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport, type UIMessage } from 'ai'
 import dynamic from 'next/dynamic'
-import useSWR from 'swr'
+import useSWR, { mutate as globalMutate } from 'swr'
 import { PromptBox, type PromptBoxSubmitPayload } from '@/components/prompt-box'
 import { PreviewPanel } from '@/components/preview-panel'
 import type { IdeFiles } from '@/components/ide-panel'
@@ -18,8 +18,34 @@ const IdePanel = dynamic(() => import('@/components/ide-panel').then((m) => m.Id
   ssr: false,
 })
 import type { ChatMode } from '@/lib/chat-store'
-import { CheckCircle2, Code2, Eye, History, Loader2, MessageSquare, Pencil, Play, RotateCcw, Terminal } from 'lucide-react'
+import { Check, CheckCircle2, Code2, Copy, Eye, History, Loader2, MessageSquare, Pencil, Play, RotateCcw, Terminal } from 'lucide-react'
 import { rollbackToMessage, truncateChatFromMessage } from '@/app/actions/checkpoints'
+
+// --- Copy message button -----------------------------------------------------
+
+function CopyMessageButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  if (!text) return null
+  return (
+    <button
+      type="button"
+      title="Скопировать сообщение"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(text)
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1500)
+        } catch {
+          /* clipboard недоступен (не-HTTPS) */
+        }
+      }}
+      className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground"
+    >
+      {copied ? <Check className="size-3 text-emerald-500" /> : <Copy className="size-3" />}
+      {copied ? 'Скопировано' : 'Копировать'}
+    </button>
+  )
+}
 
 // --- HTML extraction -------------------------------------------------------
 
@@ -447,6 +473,13 @@ export function ChatView({
   useEffect(() => {
     if (error) console.error('[aura] chat stream error:', error)
   }, [error])
+
+  // Сайдбар «Недавние чаты» живёт на SWR-ключе 'chats' и сам не обновляется —
+  // новый проект «не появлялся слева». Обновляем список после каждого ответа
+  // (заодно подтягивается свежее название чата).
+  useEffect(() => {
+    if (status === 'ready') void globalMutate('chats')
+  }, [status])
 
   // Send the pending first message handed off from the home page.
   useEffect(() => {
@@ -907,11 +940,23 @@ export function ChatView({
                             meta?.totalTokens ?? usagePart?.data?.totalTokens
                           const isStreamingThis =
                             busy && message.id === messages[messages.length - 1]?.id
+                          // Текст для «Скопировать»: без служебных маркеров.
+                          const copyText = text
+                            .replace(DESIGN_CHOICES_STRIP_RE, '')
+                            .replace(GENERIC_CHOICES_STRIP_RE, '')
+                            .replace(NEXT_STEPS_STRIP_RE, '')
+                            .replace(RUN_STRIP_RE, '')
+                            .replace(EXIT_PLAN_STRIP_RE, '')
+                            .trim()
                           if (
                             (files === 0 && secs === undefined && !tokens) ||
                             isStreamingThis
                           )
-                            return null
+                            return isStreamingThis ? null : (
+                              <div className="mt-1.5">
+                                <CopyMessageButton text={copyText} />
+                              </div>
+                            )
                           const bits: string[] = []
                           if (secs !== undefined) {
                             bits.push(
@@ -941,10 +986,13 @@ export function ChatView({
                           }
                           return (
                             <>
-                              <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground/70">
-                                <CheckCircle2 className="size-3.5 shrink-0" />
-                                {bits.join(' · ')}
-                              </p>
+                              <div className="mt-2 flex flex-wrap items-center gap-2">
+                                <p className="flex items-center gap-1.5 text-xs text-muted-foreground/70">
+                                  <CheckCircle2 className="size-3.5 shrink-0" />
+                                  {bits.join(' · ')}
+                                </p>
+                                <CopyMessageButton text={copyText} />
+                              </div>
                               {files > 0 && mode === 'ide' && !readOnly && (
                                 <button
                                   type="button"

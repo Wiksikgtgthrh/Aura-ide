@@ -49,3 +49,16 @@ export function decryptSecret(value: string): string {
     decipher.final(),
   ]).toString('utf8')
 }
+
+/**
+ * Безопасная расшифровка: null вместо исключения. Ключ, зашифрованный ДРУГИМ
+ * BETTER_AUTH_SECRET (сменили секрет/другая среда), не должен ронять целые
+ * страницы («Unsupported state or unable to authenticate data» в админке).
+ */
+export function tryDecryptSecret(value: string): string | null {
+  try {
+    return decryptSecret(value)
+  } catch {
+    return null
+  }
+}

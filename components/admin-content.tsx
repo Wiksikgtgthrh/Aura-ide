@@ -359,7 +359,22 @@ function PlanKeysManager({ planKey }: { planKey: string }) {
             <input value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="Название (Aura Max)" className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none" />
             <input value={form.modelId} onChange={(e) => setForm({ ...form, modelId: e.target.value })} placeholder="ID модели" className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none" />
           </div>
-          <input value={form.key} onChange={(e) => setForm({ ...form, key: e.target.value })} placeholder="API-ключ (sk-…)" className="h-8 rounded-md border border-border bg-background px-2 font-mono text-xs outline-none" />
+          <input
+            value={form.key}
+            onChange={(e) => setForm({ ...form, key: e.target.value })}
+            onPaste={(e) => {
+              // Вставили СПИСОК ключей в одиночное поле (в <input> переносы
+              // строк теряются) — переключаемся в «Импорт списком» с этим текстом.
+              const text = e.clipboardData.getData('text')
+              if (text.includes('\n')) {
+                e.preventDefault()
+                setBulk((b) => ({ ...b, keysText: text, baseUrl: form.baseUrl || b.baseUrl }))
+                setMode('bulk')
+              }
+            }}
+            placeholder="API-ключ (sk-…)"
+            className="h-8 rounded-md border border-border bg-background px-2 font-mono text-xs outline-none"
+          />
           <input value={form.baseUrl} onChange={(e) => setForm({ ...form, baseUrl: e.target.value })} placeholder="Base URL" className="h-8 rounded-md border border-border bg-background px-2 font-mono text-xs outline-none" />
           <div className="flex gap-2">
             <button type="button" onClick={add} disabled={!form.key.trim()} className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">Добавить</button>
@@ -591,7 +606,7 @@ function LimitsTab() {
   const field = (
     label: string,
     hint: string,
-    key: keyof PlatformLimits,
+    key: 'dockerMemoryMb' | 'dockerCpus' | 'maxProjectsFree',
     step = 1,
   ) => (
     <div className="flex flex-col gap-1.5">
@@ -607,11 +622,57 @@ function LimitsTab() {
     </div>
   )
 
+  const AURA_TIERS: { id: string; name: string }[] = [
+    { id: 'aura-mini', name: 'Aura Mini' },
+    { id: 'aura-pro', name: 'Aura Pro' },
+    { id: 'aura-max', name: 'Aura Max' },
+    { id: 'aura-max-fast', name: 'Aura Max Fast' },
+  ]
+  const tierValue = (id: string) => limits.auraTiers?.[id] ?? {}
+  const setTier = (id: string, patch: { label?: string; costMultiplier?: number }) =>
+    setLimits({
+      ...limits,
+      auraTiers: { ...(limits.auraTiers ?? {}), [id]: { ...tierValue(id), ...patch } },
+    })
+
   return (
     <div className="flex max-w-lg flex-col gap-5">
       {field('Память контейнера (МБ)', 'Лимит ОЗУ на контейнер обычного пользователя (Docker --memory).', 'dockerMemoryMb', 128)}
       {field('CPU контейнера', 'Лимит ядер CPU на контейнер (Docker --cpus).', 'dockerCpus', 0.25)}
       {field('Лимит проектов (free)', 'Максимум проектов для пользователя на бесплатном тарифе. 0 = без лимита.', 'maxProjectsFree', 1)}
+
+      {/* Модели Aura: подпись в селекторе + множитель затрат токенов */}
+      <div className="flex flex-col gap-2 border-t border-border pt-4">
+        <p className="text-sm font-medium text-foreground">Модели Aura</p>
+        <p className="text-xs text-muted-foreground text-pretty">
+          Подпись показывается под названием тира в селекторе моделей (пусто —
+          автоматически: ключ тарифа или встроенная модель). Множитель — во
+          сколько раз умножать списание токенов за запросы на этом тире.
+        </p>
+        <div className="mt-1 flex flex-col gap-1.5">
+          {AURA_TIERS.map((tier) => (
+            <div key={tier.id} className="flex items-center gap-2">
+              <span className="w-28 shrink-0 text-xs font-medium text-foreground">{tier.name}</span>
+              <input
+                value={tierValue(tier.id).label ?? ''}
+                onChange={(e) => setTier(tier.id, { label: e.target.value })}
+                placeholder="Подпись (авто)"
+                className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+              />
+              <input
+                type="number"
+                step={0.1}
+                min={0.1}
+                value={tierValue(tier.id).costMultiplier ?? 1}
+                onChange={(e) => setTier(tier.id, { costMultiplier: Number(e.target.value) })}
+                title="Множитель затрат токенов"
+                className="h-8 w-20 shrink-0 rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+              />
+              <span className="shrink-0 text-[10px] text-muted-foreground">× токены</span>
+            </div>
+          ))}
+        </div>
+      </div>
 
       <div className="flex items-center gap-3">
         <button
@@ -677,7 +738,7 @@ function OverviewTab() {
             { label: 'Пользователи', value: data.totals.users, icon: <Users className="size-3.5" /> },
             { label: 'Гости', value: data.totals.guests, icon: <Users className="size-3.5" /> },
             { label: 'Проекты', value: data.totals.projects },
-            { label: 'Чаты', value: data.totals.chats },
+            { label: 'Сообщения', value: data.totals.messages },
           ] as { label: string; value: number; icon?: React.ReactNode }[]
         ).map((s, i) => (
           <div key={s.label} className={STAGGER_ROW} style={stagger(i)}>

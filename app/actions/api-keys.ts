@@ -3,7 +3,7 @@
 import { createHash } from 'crypto'
 import { db } from '@/lib/db'
 import { apiKeys, apiKeyGroups } from '@/lib/db/schema'
-import { encryptSecret, decryptSecret, isEncrypted } from '@/lib/crypto'
+import { encryptSecret, tryDecryptSecret, isEncrypted } from '@/lib/crypto'
 import { and, asc, desc, eq } from 'drizzle-orm'
 import { revalidatePath, revalidateTag, unstable_cache } from 'next/cache'
 import { getSession } from '@/lib/session'
@@ -200,7 +200,7 @@ function toItem(r: {
   return {
     id: r.id,
     name: r.name,
-    maskedKey: maskKey(decryptSecret(r.key)),
+    maskedKey: maskKey(tryDecryptSecret(r.key) ?? '????????'),
     baseUrl: r.baseUrl,
     modelId: r.modelId,
     status: (r.status as ApiKeyStatus) ?? 'unknown',
@@ -361,7 +361,7 @@ export async function listKeyModels(id: number): Promise<string[] | null> {
     const res = await fetch(`${safe}/models`, {
       method: 'GET',
       headers: {
-        Authorization: `Bearer ${decryptSecret(row.key)}`,
+        Authorization: `Bearer ${tryDecryptSecret(row.key) ?? ""}`,
         'Content-Type': 'application/json',
       },
       signal: controller.signal,
@@ -405,7 +405,7 @@ export async function checkApiKey(id: number): Promise<ApiKeyStatus | null> {
     .limit(1)
   if (!row) return null
   const modelId = row.modelId || DEFAULT_MODEL_ID
-  const probe = await probeModel(decryptSecret(row.key), row.baseUrl, modelId)
+  const probe = await probeModel(tryDecryptSecret(row.key) ?? "", row.baseUrl, modelId)
   const status: ApiKeyStatus = probe.ok ? 'valid' : 'invalid'
   await db
     .update(apiKeys)
@@ -432,7 +432,7 @@ export async function checkAllApiKeys(): Promise<ApiKeyItem[] | null> {
   await Promise.all(
     rows.map(async (r) => {
       const modelId = r.modelId || DEFAULT_MODEL_ID
-      const probe = await probeModel(decryptSecret(r.key), r.baseUrl, modelId)
+      const probe = await probeModel(tryDecryptSecret(r.key) ?? "", r.baseUrl, modelId)
       await db
         .update(apiKeys)
         .set({
@@ -721,7 +721,7 @@ export async function diagnoseApiKey(id: number): Promise<ApiKeyDiagnostics | nu
     .limit(1)
   if (!row) return null
 
-  const rawKey = decryptSecret(row.key)
+  const rawKey = tryDecryptSecret(row.key) ?? ""
   const modelId = row.modelId || DEFAULT_MODEL_ID
   const base = normalizeBaseUrl(row.baseUrl)
   const keyLength = rawKey.length

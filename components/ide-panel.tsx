@@ -17,6 +17,7 @@ import {
   FilePlus,
   Folder,
   FolderPlus,
+  FolderTree,
   History,
   Loader2,
   MonitorSmartphone,
@@ -792,6 +793,8 @@ export function IdePanel({
     dedupingInterval: 60_000,
   })
   const [tab, setTab] = useState<PanelTab>('preview')
+  // Файловое дерево можно скрыть (Ctrl+B, как в VS Code) — больше места превью.
+  const [explorerOpen, setExplorerOpen] = useState(true)
   const [mobile, setMobile] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
   const [activeFile, setActiveFile] = useState('src/App.tsx')
@@ -922,6 +925,9 @@ export function IdePanel({
       } else if (e.key === '`') {
         e.preventDefault()
         setConsoleOpen((o) => !o)
+      } else if (key === 'b' && !e.shiftKey && !e.altKey) {
+        e.preventDefault()
+        setExplorerOpen((o) => !o)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -1617,6 +1623,18 @@ export function IdePanel({
           <PanelLeft className="size-4" />
         </Button>
 
+        {/* Скрыть/показать файловое дерево (Ctrl+B) */}
+        <button
+          type="button"
+          onClick={() => setExplorerOpen((o) => !o)}
+          title="Файлы проекта (Ctrl+B)"
+          aria-label="Файлы проекта"
+          aria-pressed={explorerOpen}
+          className={`rounded-md p-1.5 transition-colors ${explorerOpen ? 'text-muted-foreground hover:bg-accent hover:text-foreground' : 'bg-primary/10 text-primary'}`}
+        >
+          <FolderTree className="size-4" />
+        </button>
+
         {/* Tab switcher — иконки-сегменты (v0-стиль): Превью/Дизайн/Live/Код/БД */}
         <div className="flex items-center rounded-lg border border-border bg-muted/50 p-0.5">
           {tabItems.map((t_) => (
@@ -1821,10 +1839,9 @@ export function IdePanel({
 
       {/* Body */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        {/* File explorer — always visible, so the project structure and the
-            new file/folder buttons are there from the first second */}
-        {(
-          <aside className="flex w-52 shrink-0 flex-col border-r border-border bg-background/60 py-2">
+        {/* File explorer — скрывается кнопкой в шапке или Ctrl+B. */}
+        {explorerOpen && (
+          <aside className="flex w-52 shrink-0 flex-col border-r border-border bg-background/60 py-2 animate-in slide-in-from-left-2 fade-in duration-200">
             <div className="flex items-center px-3 pb-1">
               <p className="truncate text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
                 {displayName}

@@ -8,6 +8,14 @@ import { eq } from 'drizzle-orm'
  * stored in the platform_settings k/v table. Read with getLimits() — falls
  * back to defaults when unmigrated or unset.
  */
+/** Настройки одного тира Aura из админки. */
+export type AuraTierSettings = {
+  /** Подпись под названием тира в селекторе (пусто = автоматическая). */
+  label?: string
+  /** Множитель затрат токенов (1 = как есть; 2 = списывается вдвое больше). */
+  costMultiplier?: number
+}
+
 export type PlatformLimits = {
   /** Docker memory cap per user container, in MB. */
   dockerMemoryMb: number
@@ -15,12 +23,33 @@ export type PlatformLimits = {
   dockerCpus: number
   /** Max projects a free-plan user may create (0 = unlimited). */
   maxProjectsFree: number
+  /** Пер-тировые настройки Aura: подпись в селекторе + множитель токенов. */
+  auraTiers: Record<string, AuraTierSettings>
 }
 
 export const DEFAULT_LIMITS: PlatformLimits = {
   dockerMemoryMb: 1024,
   dockerCpus: 1,
   maxProjectsFree: 0,
+  auraTiers: {},
+}
+
+const AURA_TIER_IDS = new Set(['aura-mini', 'aura-pro', 'aura-max', 'aura-max-fast'])
+
+function sanitizeAuraTiers(v: unknown): Record<string, AuraTierSettings> {
+  if (!v || typeof v !== 'object') return {}
+  const out: Record<string, AuraTierSettings> = {}
+  for (const [tierId, raw] of Object.entries(v as Record<string, unknown>)) {
+    if (!AURA_TIER_IDS.has(tierId) || !raw || typeof raw !== 'object') continue
+    const r = raw as AuraTierSettings
+    const entry: AuraTierSettings = {}
+    if (typeof r.label === 'string' && r.label.trim()) entry.label = r.label.trim().slice(0, 60)
+    if (typeof r.costMultiplier === 'number' && Number.isFinite(r.costMultiplier)) {
+      entry.costMultiplier = Math.min(Math.max(r.costMultiplier, 0.1), 100)
+    }
+    if (entry.label !== undefined || entry.costMultiplier !== undefined) out[tierId] = entry
+  }
+  return out
 }
 
 const LIMITS_KEY = 'limits'
@@ -38,6 +67,7 @@ export async function getLimits(): Promise<PlatformLimits> {
       dockerMemoryMb: clampNum(v.dockerMemoryMb, DEFAULT_LIMITS.dockerMemoryMb, 256, 16384),
       dockerCpus: clampNum(v.dockerCpus, DEFAULT_LIMITS.dockerCpus, 0.25, 16),
       maxProjectsFree: clampNum(v.maxProjectsFree, DEFAULT_LIMITS.maxProjectsFree, 0, 100000),
+      auraTiers: sanitizeAuraTiers(v.auraTiers),
     }
   } catch {
     return DEFAULT_LIMITS // unmigrated
@@ -49,6 +79,7 @@ export async function setLimits(next: PlatformLimits): Promise<void> {
     dockerMemoryMb: clampNum(next.dockerMemoryMb, DEFAULT_LIMITS.dockerMemoryMb, 256, 16384),
     dockerCpus: clampNum(next.dockerCpus, DEFAULT_LIMITS.dockerCpus, 0.25, 16),
     maxProjectsFree: clampNum(next.maxProjectsFree, DEFAULT_LIMITS.maxProjectsFree, 0, 100000),
+    auraTiers: sanitizeAuraTiers(next.auraTiers),
   }
   await db
     .insert(platformSettings)

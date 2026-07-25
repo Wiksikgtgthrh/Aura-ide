@@ -13,17 +13,19 @@ import { revalidateTag } from 'next/cache'
 import { db } from '@/lib/db'
 import { getSession } from '@/lib/session'
 import { apiKeys, chats, preferences, platformApiKeys, userBalance } from '@/lib/db/schema'
-import { decryptSecret, isEncrypted } from '@/lib/crypto'
+import { tryDecryptSecret, isEncrypted } from '@/lib/crypto'
 import { AURA_MODEL_MAP, AURA_MODELS, pickPlanKeyForTier } from '@/lib/aura-models'
 import { getChatAccess } from '@/lib/chat-access'
 import { getModeration } from '@/lib/admin'
 import {
+  createChatForUser,
   createCheckpoint,
   loadChatMessagesFresh,
   loadProjectFiles,
   saveChatMessages,
   upsertProjectFilesFromMessages,
 } from '@/lib/chat-store'
+import { getLimits } from '@/lib/platform-settings'
 import { checkDailyBuiltinLimit, recordTokenUsage } from '@/lib/limits'
 import { isSafeFetchUrl } from '@/lib/ssrf'
 import { deriveDesignState } from '@/lib/design-state'
@@ -202,9 +204,36 @@ export async function POST(req: Request) {
     )
   }
 
-  const access = await getChatAccess(id, userId)
+  let access = await getChatAccess(id, userId)
   if (!access) {
-    return new Response('Chat not found', { status: 404 })
+    // Строки чата ещё нет: главная создаёт её fire-and-forget server-action'ом
+    // и мгновенно навигейтит — при гонке или сбое экшена первый запрос падал
+    // 404, а сообщения «не сохранялись». Роут теперь самодостаточен: создаём
+    // строку сами (владелец — текущий пользователь).
+    const [existing] = await db
+      .select({ id: chats.id })
+      .from(chats)
+      .where(eq(chats.id, id))
+      .limit(1)
+    if (!existing) {
+      const draftTitle =
+        ((message?.parts ?? []) as { type?: string; text?: string }[])
+          .filter((p) => p.type === 'text' && typeof p.text === 'string')
+          .map((p) => p.text as string)
+          .join(' ')
+          .trim()
+          .slice(0, 100) || 'New chat'
+      try {
+        await createChatForUser(userId, draftTitle, 'ide', id)
+        access = await getChatAccess(id, userId)
+      } catch {
+        /* параллельный createChat успел первым — перечитаем доступ */
+        access = await getChatAccess(id, userId)
+      }
+    }
+    if (!access) {
+      return new Response('Chat not found', { status: 404 })
+    }
   }
   if (access.level === 'read') {
     return new Response(
@@ -239,8 +268,10 @@ export async function POST(req: Request) {
     // SSRF guard: a custom baseUrl pointing at an internal address would let
     // the streamed response read the internal network. Reject unsafe targets.
     if (row.baseUrl && !(await isSafeFetchUrl(row.baseUrl))) return null
+    const rawKey = tryDecryptSecret(row.key)
+    if (rawKey === null) return null // зашифрован другим секретом — пропускаем
     const openai = createOpenAI({
-      apiKey: decryptSecret(row.key),
+      apiKey: rawKey,
       baseURL: row.baseUrl || undefined,
     })
     return { model: openai.chat(row.modelId || 'gpt-4o-mini'), keyId: row.id, modelName: row.modelId || 'gpt-4o-mini' }
@@ -261,8 +292,10 @@ export async function POST(req: Request) {
       .limit(1)
     if (!row) return null
     if (row.baseUrl && !(await isSafeFetchUrl(row.baseUrl))) return null
+    const rawKey = tryDecryptSecret(row.key)
+    if (rawKey === null) return null // зашифрован другим секретом — пропускаем
     const openai = createOpenAI({
-      apiKey: decryptSecret(row.key),
+      apiKey: rawKey,
       baseURL: row.baseUrl || undefined,
     })
     // Chat Completions interface — see resolveUserKeyModel note above.
@@ -328,7 +361,7 @@ export async function POST(req: Request) {
     if (!picked) return null
     if (picked.baseUrl && !(await isSafeFetchUrl(picked.baseUrl))) return null
     const openai = createOpenAI({
-      apiKey: isEncrypted(picked.key) ? decryptSecret(picked.key) : picked.key,
+      apiKey: isEncrypted(picked.key) ? (tryDecryptSecret(picked.key) ?? '') : picked.key,
       baseURL: picked.baseUrl || undefined,
     })
     const tierName = AURA_MODELS.find((m) => m.id === tierId)?.name ?? tierId
@@ -347,11 +380,17 @@ export async function POST(req: Request) {
   let model: Parameters<typeof streamText>[0]['model'] | null = null
   let usedApiKeyId: number | null = null
   let usedModelName = 'unknown'
+  // Какой тир Aura обслужил запрос (для множителя затрат токенов из админки).
+  let usedTierId: string | null = null
   // Ключ ПЛАТНОГО тарифа обходит дневной лимит встроенных моделей: за него
   // платит владелец платформы осознанно (free-тариф и гости лимитируются).
   let bypassDailyLimit = false
 
   const userPlan = await getUserPlanKey()
+  // Гости НЕ получают ключи тарифов: анонимный вход не «покупал» тариф,
+  // и бесплатная раздача админских ключей всем подряд — дыра в бюджете.
+  const isAnonymousUser =
+    (session.user as { isAnonymous?: boolean | null }).isAnonymous === true
 
   if (modelId?.startsWith('api-')) {
     // Explicit user key selected
@@ -366,7 +405,8 @@ export async function POST(req: Request) {
     }
   } else if (modelId && AURA_MODEL_MAP[modelId]) {
     // Явно выбран тир Aura: сперва ключи тарифа пользователя.
-    const planResolved = await resolvePlanKeyModel(modelId, userPlan)
+    usedTierId = modelId
+    const planResolved = isAnonymousUser ? null : await resolvePlanKeyModel(modelId, userPlan)
     if (planResolved) {
       model = planResolved.model
       usedModelName = planResolved.modelName
@@ -382,6 +422,7 @@ export async function POST(req: Request) {
         model = resolved.model
         usedApiKeyId = resolved.keyId
         usedModelName = resolved.modelName
+        usedTierId = null
       } else {
         model = AURA_MODEL_MAP[modelId] // упадёт с понятной ошибкой про шлюз
         usedModelName = AURA_MODEL_MAP[modelId]
@@ -398,7 +439,8 @@ export async function POST(req: Request) {
       usedModelName = resolved.modelName
     } else {
       // …иначе aura-max: ключ тарифа, затем Gateway.
-      const planResolved = await resolvePlanKeyModel('aura-max', userPlan)
+      usedTierId = 'aura-max'
+      const planResolved = isAnonymousUser ? null : await resolvePlanKeyModel('aura-max', userPlan)
       if (planResolved) {
         model = planResolved.model
         usedModelName = planResolved.modelName
@@ -407,6 +449,19 @@ export async function POST(req: Request) {
         model = AURA_MODEL_MAP['aura-max']
         usedModelName = AURA_MODEL_MAP['aura-max']
       }
+    }
+  }
+
+  // Множитель затрат токенов тира (админка → Лимиты → «Модели Aura»):
+  // применяется к платформенным запросам (ключ тарифа/шлюз), не к своим ключам.
+  let tierCostMultiplier = 1
+  if (usedTierId && usedApiKeyId === null) {
+    try {
+      const limits = await getLimits()
+      const m = limits.auraTiers?.[usedTierId]?.costMultiplier
+      if (typeof m === 'number' && Number.isFinite(m) && m > 0) tierCostMultiplier = m
+    } catch {
+      /* настройки недоступны — множитель 1 */
     }
   }
 
@@ -617,13 +672,14 @@ code edits — those go in \`\`\`file: blocks); never destructive commands
 and the <run> commands in one reply.
 
 ## NEXT-STEP SUGGESTIONS
-Whenever your reply emits \`\`\`file: blocks (GENERATE_NOW or EXISTING), END the
-reply with EXACTLY one machine-readable block on its own line containing 2-3
-SHORT concrete next improvements for THIS project, in the user's language
+END EVERY substantive reply (code changes, plans, explanations about the
+project) with EXACTLY one machine-readable block on its own line containing
+2-3 SHORT concrete next improvements for THIS project, in the user's language
 (each ≤ 4 words, rendered as clickable chips):
 <next-steps>Добавь тёмную тему|Сделай адаптивную вёрстку|Наполни реальными данными</next-steps>
 Tailor the suggestions to the actual project — never repeat ones already done.
-Do NOT emit this block when you did not emit files.`
+Skip the block only for tiny clarification questions (when you emit <choices>
+or <design-choices> — those already render as chips).`
 
   // Skills → extra instructions
   const skillInstructions: string[] = []
@@ -839,8 +895,9 @@ Do NOT emit this block when you did not emit files.`
             chatId: id,
             apiKeyId: usedApiKeyId,
             modelId: usedModelName,
-            promptTokens,
-            completionTokens,
+            // Затраты по тирам Aura масштабируются множителем из админки.
+            promptTokens: Math.round(promptTokens * tierCostMultiplier),
+            completionTokens: Math.round(completionTokens * tierCostMultiplier),
           })
         },
       })

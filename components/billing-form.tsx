@@ -3,7 +3,7 @@
 import { useState, useTransition, useEffect, useRef } from 'react'
 import useSWR from 'swr'
 import type { BillingData } from '@/app/actions/billing'
-import { getBillingData, changePlan } from '@/app/actions/billing'
+import { getBillingData, changePlan, getVisiblePlans, type PublicPlan } from '@/app/actions/billing'
 import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -49,7 +49,7 @@ function useCountUp(target: number, duration = 1200) {
 // ---- Pricing plans -------------------------------------------------------
 
 type Plan = {
-  id: 'free' | 'pro' | 'team'
+  id: string
   name: string
   price: number
   period: string
@@ -124,9 +124,13 @@ const PLANS: Plan[] = [
 
 // ---- Balance card --------------------------------------------------------
 
-function BalanceCard({ data }: { data: BillingData }) {
+function BalanceCard({ data, plansList }: { data: BillingData; plansList: Plan[] }) {
   const plan = data.balance.plan
-  const planMeta = PLANS.find((p) => p.id === plan) ?? PLANS[0]
+  const planMeta = plansList.find((p) => p.id === plan) ?? PLANS.find((p) => p.id === plan) ?? {
+    ...PLANS[0],
+    id: plan,
+    name: plan,
+  }
   const animatedBalance = useCountUp(data.balance.balance)
 
   const gradients: Record<string, string> = {
@@ -137,7 +141,7 @@ function BalanceCard({ data }: { data: BillingData }) {
 
   return (
     <div
-      className={`relative overflow-hidden rounded-2xl bg-gradient-to-br ${gradients[plan]} p-6 text-white`}
+      className={`relative overflow-hidden rounded-2xl bg-gradient-to-br ${gradients[plan] ?? gradients.free} p-6 text-white`}
       style={{ minHeight: 180 }}
     >
       {/* Decorative circles */}
@@ -657,7 +661,44 @@ export function BillingForm({ initialData }: { initialData?: BillingData }) {
 
   if (!data) return null
 
-  function handleSelectPlan(planId: 'free' | 'pro' | 'team') {
+  // Тарифы из админки (видимые): новые планы появляются здесь автоматически.
+  const { data: dbPlans } = useSWR('public-plans', () => getVisiblePlans(), {
+    revalidateOnFocus: false,
+    dedupingInterval: 120_000,
+  })
+  const PLAN_ICONS = [
+    <Zap key="i0" className="size-5" />,
+    <Crown key="i1" className="size-5" />,
+    <Building2 key="i2" className="size-5" />,
+    <TrendingUp key="i3" className="size-5" />,
+  ]
+  const PLAN_STYLES = [
+    { color: 'border-border', glow: '' },
+    { color: 'border-violet-500/40', glow: 'shadow-[0_0_40px_rgba(139,92,246,0.15)]' },
+    { color: 'border-amber-500/40', glow: 'shadow-[0_0_40px_rgba(245,158,11,0.12)]' },
+    { color: 'border-primary/40', glow: 'shadow-[0_0_40px_rgba(59,130,246,0.14)]' },
+  ]
+  const toDisplayPlan = (p: PublicPlan, i: number): Plan => {
+    const hardcoded = PLANS.find((hp) => hp.id === p.key)
+    return {
+      id: p.key,
+      name: p.title,
+      price: p.priceRub,
+      period: p.priceRub > 0 ? '/мес' : '',
+      description: p.copy || hardcoded?.description || '',
+      icon: hardcoded?.icon ?? PLAN_ICONS[i % PLAN_ICONS.length],
+      color: hardcoded?.color ?? PLAN_STYLES[i % PLAN_STYLES.length].color,
+      glow: hardcoded?.glow ?? PLAN_STYLES[i % PLAN_STYLES.length].glow,
+      badge: p.key === 'pro' ? 'Популярный' : undefined,
+      features:
+        p.features.length > 0
+          ? p.features.map((f) => ({ text: f, included: true }))
+          : hardcoded?.features ?? [],
+    }
+  }
+  const displayPlans: Plan[] = dbPlans ? dbPlans.map(toDisplayPlan) : PLANS
+
+  function handleSelectPlan(planId: string) {
     setData((d) =>
       d ? { ...d, balance: { ...d.balance, plan: planId } } : d,
     )
@@ -673,7 +714,7 @@ export function BillingForm({ initialData }: { initialData?: BillingData }) {
         <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Баланс
         </h2>
-        <BalanceCard data={data} />
+        <BalanceCard data={data} plansList={displayPlans} />
       </section>
 
       {/* Referral */}
@@ -684,8 +725,8 @@ export function BillingForm({ initialData }: { initialData?: BillingData }) {
         <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Тарифные планы
         </h2>
-        <div className="grid grid-cols-3 gap-4 pt-3">
-          {PLANS.map((plan) => (
+        <div className="grid gap-4 pt-3 sm:grid-cols-2 lg:grid-cols-3">
+          {displayPlans.map((plan) => (
             <PlanCard
               key={plan.id}
               plan={plan}

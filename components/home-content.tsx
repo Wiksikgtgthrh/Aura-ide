@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { generateId } from 'ai'
+import { mutate as globalMutate } from 'swr'
 import dynamic from 'next/dynamic'
 import { PromptBox, type PromptBoxSubmitPayload } from '@/components/prompt-box'
 import { createChat } from '@/app/actions/chats'
@@ -63,7 +64,11 @@ export function HomeContent() {
     // Fire-and-forget: the chat page retries getChatOwned() while this
     // server action persists the row, so we can navigate instantly instead
     // of blocking the click on a server round-trip.
-    void createChat(text, 'ide', id).catch(() => {})
+    // /api/chat теперь и сам создаёт строку чата при гонке; после создания
+    // обновляем список «Недавние чаты» в сайдбаре (SWR-ключ 'chats').
+    void createChat(text, 'ide', id)
+      .then(() => globalMutate('chats'))
+      .catch(() => {})
     router.push(`/chat/${id}`)
   }
 

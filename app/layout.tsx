@@ -41,7 +41,7 @@ export default async function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="ru" className="bg-background">
+    <html lang="ru" className="bg-background" suppressHydrationWarning>
       <head>
         {/*
           Reads the aura-theme cookie synchronously before first paint to

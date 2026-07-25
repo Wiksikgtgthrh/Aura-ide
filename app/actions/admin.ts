@@ -6,6 +6,7 @@ import {
   userBalance,
   apiKeys,
   chats,
+  messages,
   projects,
   adminAudit,
   plans,
@@ -26,7 +27,7 @@ import {
 } from '@/lib/plugin-types'
 import { and, asc, desc, eq, ilike, or, sql } from 'drizzle-orm'
 import { revalidateTag } from 'next/cache'
-import { decryptSecret, encryptSecret, isEncrypted } from '@/lib/crypto'
+import { encryptSecret, tryDecryptSecret } from '@/lib/crypto'
 import { auth } from '@/lib/auth'
 import { requireAdmin, PERMANENT_UNTIL, type Role } from '@/lib/admin'
 import {
@@ -41,7 +42,9 @@ import { dockerContainerStats, type ContainerStat } from '@/lib/terminal'
 import { getLimits, setLimits, type PlatformLimits } from '@/lib/platform-settings'
 
 export type AdminOverview = {
-  totals: { users: number; guests: number; projects: number; chats: number }
+  // «Проекты» = чаты-проекты (IDE): раньше показывалась таблица projects
+  // (папки-контейнеры), из-за чего в Обзоре были «неправильные» нули.
+  totals: { users: number; guests: number; projects: number; messages: number }
   containers: ContainerStat[]
   docker: boolean
 }
@@ -57,11 +60,11 @@ export async function getAdminOverview(): Promise<AdminOverview | null> {
   const actor = await requireAdmin('admin')
   if (!actor) return null
 
-  const [[users], [guests], [projCount], [chatCount]] = await Promise.all([
+  const [[users], [guests], [chatCount], [msgCount]] = await Promise.all([
     db.select({ n: sql<number>`count(*)::int` }).from(user).where(eq(user.isAnonymous, false)),
     db.select({ n: sql<number>`count(*)::int` }).from(user).where(eq(user.isAnonymous, true)),
-    db.select({ n: sql<number>`count(*)::int` }).from(projects),
     db.select({ n: sql<number>`count(*)::int` }).from(chats),
+    db.select({ n: sql<number>`count(*)::int` }).from(messages),
   ])
 
   const containers = dockerContainerStats()
@@ -69,8 +72,8 @@ export async function getAdminOverview(): Promise<AdminOverview | null> {
     totals: {
       users: users?.n ?? 0,
       guests: guests?.n ?? 0,
-      projects: projCount?.n ?? 0,
-      chats: chatCount?.n ?? 0,
+      projects: chatCount?.n ?? 0,
+      messages: msgCount?.n ?? 0,
     },
     containers,
     docker: containers.length >= 0,
@@ -189,7 +192,7 @@ export async function getUserDetail(userId: string): Promise<AdminUserDetail | n
     keys = rows.map((k) => ({
       id: k.id,
       name: k.name,
-      key: isEncrypted(k.key) ? decryptSecret(k.key) : k.key,
+      key: tryDecryptSecret(k.key) ?? '⚠ не расшифровывается (ключ зашифрован другим BETTER_AUTH_SECRET)',
       modelId: k.modelId,
       baseUrl: k.baseUrl,
     }))
@@ -490,7 +493,7 @@ export async function listPlanApiKeys(planKey: string): Promise<AdminPlanKey[] |
     id: r.id,
     planKey: r.planKey,
     label: r.label,
-    maskedKey: maskKey(isEncrypted(r.key) ? decryptSecret(r.key) : r.key),
+    maskedKey: maskKey(tryDecryptSecret(r.key) ?? '????????'),
     modelId: r.modelId,
     baseUrl: r.baseUrl,
     status: r.status ?? 'unknown',
