@@ -158,7 +158,7 @@ export const AddContentMenu = memo(function AddContentMenu({
               <Zap className="size-4" />
               {t('skills')}
               {activeSkills.size > 0 && (
-                <span className="ml-auto flex size-4 items-center justify-center rounded-full bg-foreground text-[10px] font-medium text-background">
+                <span className="ml-auto flex size-4 items-center justify-center rounded-full bg-primary text-[10px] font-medium text-primary-foreground">
                   {activeSkills.size}
                 </span>
               )}
@@ -204,7 +204,7 @@ export const AddContentMenu = memo(function AddContentMenu({
               <Folder className="size-4" />
               {t('folder')}
               {attachedProjectId !== null && (
-                <span className="ml-auto flex size-4 items-center justify-center rounded-full bg-foreground text-[10px] font-medium text-background">
+                <span className="ml-auto flex size-4 items-center justify-center rounded-full bg-primary text-[10px] font-medium text-primary-foreground">
                   <Check className="size-2.5" />
                 </span>
               )}
@@ -225,7 +225,7 @@ export const AddContentMenu = memo(function AddContentMenu({
                   type="button"
                   onClick={handleCreateFolder}
                   disabled={!newFolderName.trim()}
-                  className="size-7 flex items-center justify-center rounded-md bg-foreground text-background hover:opacity-90 disabled:opacity-40 transition-opacity shrink-0"
+                  className="size-7 flex items-center justify-center rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40 transition-opacity shrink-0"
                   aria-label={t('create')}
                 >
                   <Plus className="size-3.5" />

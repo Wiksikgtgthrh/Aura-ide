@@ -72,7 +72,7 @@ export default function FreePage() {
                   <h2 className="text-sm font-medium text-foreground">
                     {perk.title}
                   </h2>
-                  <span className="rounded bg-foreground px-1.5 py-0.5 text-[10px] font-medium text-background">
+                  <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">
                     {perk.badge}
                   </span>
                 </div>

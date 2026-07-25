@@ -107,7 +107,7 @@ function ProjectCard({
         </span>
       </div>
       <div className="flex items-center gap-2.5 px-0.5">
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-foreground text-background text-xs font-bold">
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">
           A
         </span>
         <div className="flex min-w-0 flex-1 flex-col">
@@ -283,8 +283,8 @@ export function ProjectsContent({
               }}
               className="flex min-h-28 flex-col items-center justify-center gap-3 rounded-lg border border-border bg-background p-5 text-center shadow-xs transition-colors duration-200 hover:bg-accent"
             >
-              <span className="flex size-9 items-center justify-center rounded-full bg-foreground">
-                <Plus className="size-5 text-background" />
+              <span className="flex size-9 items-center justify-center rounded-full bg-primary">
+                <Plus className="size-5 text-primary-foreground" />
               </span>
               <span className="text-sm font-medium text-foreground">{t('blankProject')}</span>
             </button>
@@ -311,7 +311,7 @@ export function ProjectsContent({
                   onClick={() => setChooserOpen(false)}
                   className="flex items-center gap-2.5 rounded-md px-2 py-2 transition-colors duration-200 hover:bg-accent"
                 >
-                  <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-foreground text-background text-[10px] font-bold">
+                  <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-[10px] font-bold">
                     A
                   </span>
                   <span className="flex-1 truncate text-sm text-foreground">{chat.title}</span>

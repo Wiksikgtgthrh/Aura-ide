@@ -658,10 +658,9 @@ export function BillingForm({ initialData }: { initialData?: BillingData }) {
   if (!data) return null
 
   function handleSelectPlan(planId: 'free' | 'pro' | 'team') {
-    setData((d) => ({
-      ...d,
-      balance: { ...d.balance, plan: planId },
-    }))
+    setData((d) =>
+      d ? { ...d, balance: { ...d.balance, plan: planId } } : d,
+    )
     startTransition(async () => {
       await changePlan(planId)
     })

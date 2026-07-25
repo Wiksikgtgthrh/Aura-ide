@@ -776,7 +776,7 @@ export function ChatView({
                           type="button"
                           disabled={editBusy || !editDraft.trim()}
                           onClick={() => void handleEditSubmit()}
-                          className="flex items-center gap-1.5 rounded-md bg-foreground px-2.5 py-1 text-xs font-medium text-background transition-all active:scale-95 disabled:opacity-50"
+                          className="flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground transition-all active:scale-95 disabled:opacity-50"
                         >
                           {editBusy && <Loader2 className="size-3 animate-spin" />}
                           {t('sendEdited')}
@@ -787,7 +787,7 @@ export function ChatView({
                     <div
                       className={`max-w-[85%] text-sm leading-relaxed whitespace-pre-wrap ${
                         isUser
-                          ? 'rounded-2xl rounded-br-md bg-foreground text-background px-4 py-2.5'
+                          ? 'rounded-2xl rounded-br-md bg-primary text-primary-foreground px-4 py-2.5'
                           : 'text-foreground'
                       }`}
                     >
@@ -840,7 +840,7 @@ export function ChatView({
                                             setHandledCmds((p) => new Set(p).add(key))
                                             runCmd(cmd)
                                           }}
-                                          className="rounded-md bg-foreground px-2 py-0.5 text-[11px] font-medium text-background transition-all active:scale-95"
+                                          className="rounded-md bg-primary px-2 py-0.5 text-[11px] font-medium text-primary-foreground transition-all active:scale-95"
                                         >
                                           {t('runCmdRun')}
                                         </button>
@@ -1195,7 +1195,7 @@ export function ChatView({
             type="button"
             onClick={() => setChatCollapsed(false)}
             className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium transition-all active:scale-95 ${
-              !chatCollapsed ? 'bg-foreground text-background' : 'text-muted-foreground'
+              !chatCollapsed ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'
             }`}
           >
             <MessageSquare className="size-3.5" />
@@ -1205,7 +1205,7 @@ export function ChatView({
             type="button"
             onClick={() => setChatCollapsed(true)}
             className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium transition-all active:scale-95 ${
-              chatCollapsed ? 'bg-foreground text-background' : 'text-muted-foreground'
+              chatCollapsed ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'
             }`}
           >
             <Eye className="size-3.5" />

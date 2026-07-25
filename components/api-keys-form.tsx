@@ -690,7 +690,8 @@ export function ApiKeysForm({ initialData }: { initialData?: ApiKeysGrouped | nu
   }
 
   const allKeys = [...ungrouped, ...groups.flatMap((g) => g.keys)]
-  const activeCount = allKeys.filter((k) => k.status === 'active' || k.status === 'valid').length
+  // 'active' пишет legacy-чекер /api/check-keys, 'valid' — экшены: оба «рабочий».
+  const activeCount = allKeys.filter((k) => (k.status as string) === 'active' || k.status === 'valid').length
   const errorCount = allKeys.filter((k) => k.status === 'error' || k.status === 'invalid' || k.status === 'timeout').length
 
   return (
@@ -812,7 +813,7 @@ export function ApiKeysForm({ initialData }: { initialData?: ApiKeysGrouped | nu
                     onClick={() => setThresholdInput(String(v))}
                     className={`rounded-md px-2 py-1 text-[11px] border transition-colors ${
                       thresholdInput === String(v)
-                        ? 'bg-foreground text-background border-foreground'
+                        ? 'bg-primary text-primary-foreground border-primary'
                         : 'border-border text-muted-foreground hover:text-foreground hover:border-foreground/40'
                     }`}
                   >

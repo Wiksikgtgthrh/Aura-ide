@@ -106,7 +106,7 @@ export function TeamDetailContent({
             onClick={() => setTab(key)}
             className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-colors -mb-px border-b-2 ${
               tab === key
-                ? 'text-foreground border-foreground'
+                ? 'text-foreground border-primary'
                 : 'text-muted-foreground border-transparent hover:text-foreground hover:border-border'
             }`}
           >

@@ -190,7 +190,7 @@ export function McpDialog({
                   type="button"
                   onClick={handleAdd}
                   disabled={isPending || !newName.trim() || !newUrl.trim()}
-                  className="flex items-center gap-1.5 rounded-lg bg-foreground px-3 py-1.5 text-xs font-medium text-background hover:opacity-90 disabled:opacity-50 transition-opacity"
+                  className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50 transition-opacity"
                 >
                   {isPending && <Loader2 className="size-3.5 animate-spin" />}
                   {t('addServer')}

@@ -120,7 +120,7 @@ export function MicButton({
         className={`size-8 flex items-center justify-center rounded-lg transition-all duration-300 active:scale-95 relative overflow-visible ${
           listening
             ? 'bg-destructive text-destructive-foreground shadow-lg shadow-destructive/30'
-            : 'bg-foreground text-background hover:opacity-90 hover:scale-105'
+            : 'bg-primary text-primary-foreground hover:opacity-90 hover:scale-105'
         }`}
       >
         {listening ? (

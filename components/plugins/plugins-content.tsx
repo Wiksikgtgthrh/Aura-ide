@@ -63,7 +63,7 @@ export function PluginsContent({ initialPlugins }: { initialPlugins?: Marketplac
             onClick={() => setFilter(tab.key)}
             className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors duration-200 ${
               filter === tab.key
-                ? 'bg-foreground text-background'
+                ? 'bg-primary text-primary-foreground'
                 : 'text-muted-foreground hover:text-foreground hover:bg-muted'
             }`}
           >

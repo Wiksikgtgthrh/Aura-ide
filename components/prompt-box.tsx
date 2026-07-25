@@ -268,7 +268,7 @@ export function PromptBox({
                 type="button"
                 onClick={onStop}
                 aria-label={t('stop')}
-                className="size-8 flex items-center justify-center rounded-lg bg-foreground text-background hover:opacity-90 active:scale-95 transition-all duration-200"
+                className="size-8 flex items-center justify-center rounded-lg bg-primary text-primary-foreground hover:opacity-90 active:scale-95 transition-all duration-200"
               >
                 <Square className="size-3.5 fill-current" />
               </button>
@@ -277,7 +277,7 @@ export function PromptBox({
                 type="button"
                 onClick={submit}
                 aria-label={t('send')}
-                className="size-8 flex items-center justify-center rounded-lg bg-foreground text-background hover:opacity-90 active:scale-95 transition-all duration-200"
+                className="size-8 flex items-center justify-center rounded-lg bg-primary text-primary-foreground hover:opacity-90 active:scale-95 transition-all duration-200"
               >
                 <ArrowUp className="size-4" />
               </button>

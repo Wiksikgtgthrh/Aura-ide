@@ -117,8 +117,8 @@ export function SettingsSidebar({ userName }: { userName: string }) {
     <aside className="w-64 shrink-0 h-svh flex flex-col bg-sidebar border-r border-sidebar-border">
       <div className="px-3 pt-3">
         <div className="flex items-center gap-2 px-2 py-1.5">
-          <span className="size-5 rounded-full bg-foreground flex items-center justify-center shrink-0">
-            <span className="text-background text-[10px] font-semibold">A</span>
+          <span className="size-5 rounded-full bg-primary flex items-center justify-center shrink-0">
+            <span className="text-primary-foreground text-[10px] font-semibold">A</span>
           </span>
           <span className="truncate text-sm font-medium text-sidebar-foreground">
             Aura — {userName}

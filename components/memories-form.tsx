@@ -402,15 +402,18 @@ export function MemoriesForm({
                   {t('memoryExport')}
                 </Button>
                 <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="gap-1.5 text-destructive hover:text-destructive"
-                    >
-                      <Trash2 className="size-3.5" />
-                      {t('memoryClearAll')}
-                    </Button>
+                  {/* Base UI: у Trigger нет asChild — рендерим кнопку через render. */}
+                  <AlertDialogTrigger
+                    render={
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="gap-1.5 text-destructive hover:text-destructive"
+                      />
+                    }
+                  >
+                    <Trash2 className="size-3.5" />
+                    {t('memoryClearAll')}
                   </AlertDialogTrigger>
                   <AlertDialogContent>
                     <AlertDialogHeader>

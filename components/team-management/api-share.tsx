@@ -270,7 +270,7 @@ function AddApiShareDialog({
                     key={key.id}
                     className={`flex items-center gap-2.5 px-3 py-2 rounded-md border cursor-pointer transition-colors ${
                       selectedId === key.id
-                        ? 'border-foreground bg-muted'
+                        ? 'border-primary bg-primary/5'
                         : 'border-border hover:bg-muted/50'
                     }`}
                   >
@@ -295,7 +295,7 @@ function AddApiShareDialog({
           <div className="flex flex-col gap-1.5">
             <label className="text-sm font-medium">Уровень доступа</label>
             <div className="flex flex-col gap-1">
-              <label className={`flex items-start gap-2.5 px-3 py-2.5 rounded-md border cursor-pointer transition-colors ${accessLevel === 'readonly' ? 'border-foreground bg-muted' : 'border-border hover:bg-muted/50'}`}>
+              <label className={`flex items-start gap-2.5 px-3 py-2.5 rounded-md border cursor-pointer transition-colors ${accessLevel === 'readonly' ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'}`}>
                 <input type="radio" name="access" checked={accessLevel === 'readonly'} onChange={() => setAccessLevel('readonly')} className="sr-only" />
                 <EyeOff className="size-4 text-muted-foreground mt-0.5 shrink-0" />
                 <div>
@@ -303,7 +303,7 @@ function AddApiShareDialog({
                   <p className="text-xs text-muted-foreground">Участники видят доступные модели, но не ключ и Base URL</p>
                 </div>
               </label>
-              <label className={`flex items-start gap-2.5 px-3 py-2.5 rounded-md border cursor-pointer transition-colors ${accessLevel === 'full' ? 'border-foreground bg-muted' : 'border-border hover:bg-muted/50'}`}>
+              <label className={`flex items-start gap-2.5 px-3 py-2.5 rounded-md border cursor-pointer transition-colors ${accessLevel === 'full' ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'}`}>
                 <input type="radio" name="access" checked={accessLevel === 'full'} onChange={() => setAccessLevel('full')} className="sr-only" />
                 <Eye className="size-4 text-muted-foreground mt-0.5 shrink-0" />
                 <div>

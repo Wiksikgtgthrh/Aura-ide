@@ -39,8 +39,8 @@ export default function ForgotPasswordPage() {
     <main className="min-h-svh bg-background flex items-center justify-center px-4">
       <div className="w-full max-w-sm animate-in fade-in slide-in-from-bottom-2 duration-200">
         <div className="flex flex-col items-center mb-8">
-          <div className="size-10 rounded-lg bg-foreground flex items-center justify-center mb-4">
-            <span className="text-background font-semibold text-lg">A</span>
+          <div className="size-10 rounded-lg bg-primary flex items-center justify-center mb-4">
+            <span className="text-primary-foreground font-semibold text-lg">A</span>
           </div>
           <h1 className="text-xl font-semibold tracking-tight text-foreground text-balance">
             {t('forgotTitle')}

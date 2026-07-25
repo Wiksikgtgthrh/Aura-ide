@@ -110,7 +110,7 @@ export function GithubIconImportDialog({
               type="button"
               onClick={handleImport}
               disabled={importing}
-              className="px-4 bg-foreground text-background text-sm font-medium hover:opacity-90 transition-opacity duration-200 disabled:opacity-50 flex items-center gap-1.5"
+              className="px-4 bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity duration-200 disabled:opacity-50 flex items-center gap-1.5"
             >
               {importing && <Loader2 className="size-3.5 animate-spin" />}
               {t('importAction')}
