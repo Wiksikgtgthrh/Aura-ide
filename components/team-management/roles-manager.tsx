@@ -13,7 +13,8 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog'
-import { Plus, Trash2, Shield, Lock, Loader2 } from 'lucide-react'
+import { Plus, Trash2, Shield, Lock, Loader2, RotateCcw } from 'lucide-react'
+import { BUILT_IN_ROLES } from '@/lib/team-types'
 
 const ALL_PERMISSIONS: { key: Permission; label: string; group: string }[] = [
   { key: 'view_team', label: 'Просмотр команды', group: 'Просмотр' },
@@ -63,7 +64,7 @@ function PermissionsEditor({
                   type="checkbox"
                   checked={permissions.includes(perm.key)}
                   onChange={() => toggle(perm.key)}
-                  className="size-4 rounded border-border accent-foreground"
+                  className="size-4 rounded border-border"
                 />
                 <span className="text-sm">{perm.label}</span>
               </label>
@@ -90,6 +91,7 @@ export function RolesManager({
 
   const [createOpen, setCreateOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [editingBuiltIn, setEditingBuiltIn] = useState(false)
   const [roleName, setRoleName] = useState('')
   const [rolePerms, setRolePerms] = useState<Permission[]>([])
   const [saving, setSaving] = useState(false)
@@ -100,12 +102,14 @@ export function RolesManager({
     setRolePerms(['view_team', 'view_members'])
     setCreateOpen(true)
     setEditingId(null)
+    setEditingBuiltIn(false)
   }
 
-  const openEdit = (role: { id: string; name: string; permissions: Permission[] }) => {
+  const openEdit = (role: { id: string; name: string; permissions: Permission[]; isBuiltIn: boolean }) => {
     setRoleName(role.name)
     setRolePerms(role.permissions)
     setEditingId(role.id)
+    setEditingBuiltIn(role.isBuiltIn)
     setCreateOpen(true)
   }
 
@@ -114,7 +118,10 @@ export function RolesManager({
     setSaving(true)
     try {
       if (editingId) {
-        await updateRole(editingId, { name: roleName, permissions: rolePerms })
+        await updateRole(
+          editingId,
+          editingBuiltIn ? { permissions: rolePerms } : { name: roleName, permissions: rolePerms },
+        )
       } else {
         await createCustomRole(teamId, roleName, rolePerms)
       }
@@ -177,25 +184,34 @@ export function RolesManager({
                 </span>
               </div>
             </div>
-            {canManage && !role.isBuiltIn && (
+            {canManage && (
               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                 <Button size="sm" variant="ghost" onClick={() => openEdit(role)} className="h-7 px-2 text-xs">
-                  Изменить
+                  {role.isBuiltIn ? 'Настроить права' : 'Изменить'}
                 </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => handleDelete(role.id)}
-                  disabled={deleting === role.id}
-                  className="h-7 px-2 text-destructive hover:text-destructive"
-                  aria-label="Удалить роль"
-                >
-                  {deleting === role.id ? (
-                    <Loader2 className="size-3.5 animate-spin" />
-                  ) : (
-                    <Trash2 className="size-3.5" />
-                  )}
-                </Button>
+                {role.isBuiltIn ? (
+                  <span
+                    className="px-1 text-muted-foreground/50"
+                    title="Встроенную роль нельзя удалить — на ней держатся базовые уровни доступа"
+                  >
+                    <Lock className="size-3.5" />
+                  </span>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => handleDelete(role.id)}
+                    disabled={deleting === role.id}
+                    className="h-7 px-2 text-destructive hover:text-destructive"
+                    aria-label="Удалить роль"
+                  >
+                    {deleting === role.id ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="size-3.5" />
+                    )}
+                  </Button>
+                )}
               </div>
             )}
           </div>
@@ -216,10 +232,32 @@ export function RolesManager({
                 onChange={(e) => setRoleName(e.target.value)}
                 placeholder="Например: Разработчик"
                 maxLength={50}
+                disabled={editingBuiltIn}
               />
+              {editingBuiltIn && (
+                <p className="text-xs text-muted-foreground text-pretty">
+                  Встроенная роль: имя фиксировано (на нём держатся базовые уровни
+                  доступа к проектам), а права — настраивайте свободно.
+                </p>
+              )}
             </div>
             <div className="flex flex-col gap-1.5">
-              <span className="text-sm font-medium">Права</span>
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">Права</span>
+                {editingBuiltIn && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const std = BUILT_IN_ROLES.find((r) => r.name === roleName)
+                      if (std) setRolePerms(std.permissions)
+                    }}
+                    className="flex items-center gap-1 rounded-md px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    <RotateCcw className="size-3" />
+                    Сбросить к стандартным
+                  </button>
+                )}
+              </div>
               <div className="max-h-72 overflow-y-auto -mx-1 px-1">
                 <PermissionsEditor permissions={rolePerms} onChange={setRolePerms} />
               </div>

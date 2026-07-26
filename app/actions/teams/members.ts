@@ -162,11 +162,14 @@ export async function updateRole(roleId: string, data: { name?: string; permissi
   if (!session) return false
   const [role] = await db.select().from(teamRoles).where(eq(teamRoles.id, roleId)).limit(1)
   if (!role) return false
-  if (role.isBuiltIn) throw new Error('Встроенные роли нельзя изменить')
   await assertPermission(role.teamId, session.user.id, 'manage_roles')
   const set: Record<string, unknown> = {}
-  if (data.name !== undefined) set.name = data.name.trim().slice(0, 50)
+  // ПРАВА встроенных ролей редактировать можно (под свою команду), а вот ИМЯ
+  // фиксировано: на «Viewer» завязан read-only доступ к расшаренным проектам
+  // (lib/chat-access.ts) — переименование сломало бы ограничение.
+  if (data.name !== undefined && !role.isBuiltIn) set.name = data.name.trim().slice(0, 50)
   if (data.permissions !== undefined) set.permissions = data.permissions
+  if (Object.keys(set).length === 0) return true
   await db.update(teamRoles).set(set).where(eq(teamRoles.id, roleId))
   return true
 }
