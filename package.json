@@ -19,6 +19,8 @@
     "migrate:memories": "node scripts/migrate-memories.mjs",
     "migrate:admin": "node scripts/migrate-admin.mjs",
     "seed:plugins": "node scripts/seed-plugins.mjs",
+    "migrate:farm": "node scripts/migrate-farm.mjs",
+    "seed:farm": "node scripts/seed-farm.mjs",
     "test": "vitest run"
   },
   "dependencies": {

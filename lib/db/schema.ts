@@ -482,3 +482,60 @@ export const projectTeamAccess = pgTable('project_team_access', {
     .references(() => user.id, { onDelete: 'cascade' }),
   grantedAt: timestamp('grantedAt').notNull().defaultNow(),
 })
+
+// --- V0 Farm plugin --------------------------------------------------------
+// Пул v0-ключей (Authorization: "Bearer vcp_...") с ротацией и кулдауном.
+// Управляется из админки (вкладка «V0 Farm»), ключи шифруются на диске.
+
+export const farmKeyGroups = pgTable('farm_key_groups', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  name: text('name').notNull(),
+  description: text('description').notNull().default(''),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+  updatedAt: timestamp('updatedAt').notNull().defaultNow(),
+})
+
+export const farmKeys = pgTable('farm_keys', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  groupId: text('groupId')
+    .notNull()
+    .references(() => farmKeyGroups.id, { onDelete: 'cascade' }),
+  label: text('label').notNull().default(''),
+  // Полное значение Authorization-заголовка («Bearer vcp_...»), шифруется.
+  key: text('key').notNull(),
+  // 'ready' | 'cooldown' | 'disabled'
+  status: text('status').notNull().default('ready'),
+  cooldownUntil: timestamp('cooldownUntil'),
+  cooldownReason: text('cooldownReason').notNull().default(''),
+  lastUsedAt: timestamp('lastUsedAt'),
+  lastError: text('lastError').notNull().default(''),
+  usageCount: integer('usageCount').notNull().default(0),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+  updatedAt: timestamp('updatedAt').notNull().defaultNow(),
+})
+
+// Кому доступна группа ключей: 'user' | 'plan' | 'admin' | 'all'.
+// targetId = userId (user) или ключ тарифа из plans.key (plan).
+export const farmAssignments = pgTable('farm_assignments', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  groupId: text('groupId')
+    .notNull()
+    .references(() => farmKeyGroups.id, { onDelete: 'cascade' }),
+  targetType: text('targetType').notNull(),
+  targetId: text('targetId').notNull().default(''),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+})
+
+// Лог генераций/исчерпаний (без FK — логи переживают удаление ключей/групп).
+export const farmUsageLog = pgTable('farm_usage_log', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text('userId').notNull(),
+  chatId: text('chatId').notNull().default(''),
+  groupId: text('groupId'),
+  keyId: text('keyId'),
+  prompt: text('prompt').notNull().default(''),
+  // 'ok' | 'exhausted' | 'error'
+  status: text('status').notNull(),
+  error: text('error').notNull().default(''),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+})

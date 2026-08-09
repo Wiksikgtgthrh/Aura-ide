@@ -15,6 +15,7 @@ import {
 } from '@/app/actions/chats'
 import type { ChatListItem } from '@/lib/chat-store'
 import { Button } from '@/components/ui/button'
+import { getMyFarmAccess } from '@/app/actions/farm'
 import dynamic from 'next/dynamic'
 
 const GithubIconImportDialog = dynamic(
@@ -23,6 +24,10 @@ const GithubIconImportDialog = dynamic(
 )
 const SearchDialog = dynamic(
   () => import('@/components/search-dialog').then((m) => m.SearchDialog),
+  { ssr: false },
+)
+const FarmDialog = dynamic(
+  () => import('@/components/farm/farm-dialog').then((m) => m.FarmDialog),
   { ssr: false },
 )
 import {
@@ -73,6 +78,7 @@ import {
   Puzzle as PuzzleSettings,
   UserCircle,
 } from 'lucide-react'
+import { Farm } from 'lucide-react'
 import { GithubLogo } from '@/components/icons/github-logo'
 import { AccountAvatar } from '@/components/sidebar/account-avatar'
 import { ChatRow } from '@/components/sidebar/chat-row'
@@ -292,6 +298,15 @@ export function AppSidebar({
   const [favoritesOpen, setFavoritesOpen] = useState(true)
   const [recentOpen, setRecentOpen] = useState(true)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [farmOpen, setFarmOpen] = useState(false)
+  const [farmAccess, setFarmAccess] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    getMyFarmAccess()
+      .then((r) => { if (!cancelled) setFarmAccess(r.hasAccess) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
 
   const { data: chatList, mutate: mutateChats } = useSWR('chats', () => getChats(), {
     fallbackData: initialChats,
@@ -644,6 +659,17 @@ export function AppSidebar({
           )
         })}
 
+        {/* V0 Farm — key-pool generation: admins + users with assigned keys */}
+        {(role !== 'user' || farmAccess) && (
+          <button
+            type="button"
+            onClick={() => setFarmOpen(true)}
+            className="flex items-center gap-2.5 px-2 py-1.5 rounded-md text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors duration-200 text-left w-full"
+          >
+            <Farm className="size-4" />
+            V0 Farm
+          </button>
+        )}
         {/* Admin panel entry — only for admins / superadmins */}
         {role !== 'user' && (
           <button
@@ -824,6 +850,7 @@ export function AppSidebar({
     </aside>
     <GithubIconImportDialog open={githubOpen} onOpenChange={setGithubIconOpen} />
     <SearchDialog open={searchOpen} onOpenChange={setSearchOpen} chats={chatList ?? []} />
+    <FarmDialog open={farmOpen} onOpenChange={setFarmOpen} />
     </>
   )
 }
