@@ -78,7 +78,7 @@ import {
   Puzzle as PuzzleSettings,
   UserCircle,
 } from 'lucide-react'
-import { Farm } from 'lucide-react'
+import { Sprout } from 'lucide-react'
 import { GithubLogo } from '@/components/icons/github-logo'
 import { AccountAvatar } from '@/components/sidebar/account-avatar'
 import { ChatRow } from '@/components/sidebar/chat-row'
@@ -666,7 +666,7 @@ export function AppSidebar({
             onClick={() => setFarmOpen(true)}
             className="flex items-center gap-2.5 px-2 py-1.5 rounded-md text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors duration-200 text-left w-full"
           >
-            <Farm className="size-4" />
+            <Sprout className="size-4" />
             V0 Farm
           </button>
         )}

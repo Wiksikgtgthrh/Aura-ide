@@ -20,7 +20,7 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react'
-import { Farm } from 'lucide-react'
+import { Sprout } from 'lucide-react'
 import {
   getAdminOverview,
   listUsers,
@@ -67,7 +67,7 @@ export function AdminContent({ isSuperadmin }: { isSuperadmin: boolean }) {
     { key: 'admins', label: 'Админы', icon: <Shield className="size-4" /> },
     { key: 'plans', label: 'Тарифы', icon: <CreditCard className="size-4" /> },
     { key: 'plugins', label: 'Плагины', icon: <Puzzle className="size-4" /> },
-    { key: 'farm', label: 'V0 Farm', icon: <Farm className="size-4" /> },
+    { key: 'farm', label: 'V0 Farm', icon: <Sprout className="size-4" /> },
     { key: 'limits', label: 'Лимиты', icon: <SlidersHorizontal className="size-4" /> },
   ]
 
