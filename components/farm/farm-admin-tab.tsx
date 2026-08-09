@@ -9,6 +9,8 @@ import {
   addFarmAssignment,
   addFarmKey,
   createFarmGroup,
+  createFarmModel,
+  deleteFarmModel,
   deleteFarmGroup,
   deleteFarmKey,
   getFarmOverview,
@@ -17,6 +19,7 @@ import {
   removeFarmAssignment,
   searchFarmUsers,
   setFarmKeyStatus,
+  setFarmModelDefault,
   type FarmOverview,
 } from '@/app/actions/farm'
 
@@ -64,6 +67,10 @@ export function FarmAdminTab() {
   const [keyGroupId, setKeyGroupId] = useState('')
   const [keyLabel, setKeyLabel] = useState('')
   const [keyRaw, setKeyRaw] = useState('')
+  const [modelName, setModelName] = useState('')
+  const [modelV0Id, setModelV0Id] = useState('')
+  const [modelDesc, setModelDesc] = useState('')
+  const [modelDefault, setModelDefault] = useState(false)
   const [assignGroupId, setAssignGroupId] = useState('')
   const [assignType, setAssignType] = useState('user')
   const [assignPlan, setAssignPlan] = useState('')
@@ -370,6 +377,102 @@ export function FarmAdminTab() {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+      </section>
+
+      {/* Модели */}
+      <section className="rounded-lg border border-border bg-card p-4">
+        <h3 className="text-sm font-medium mb-1">Модели v0</h3>
+        <p className="text-xs text-muted-foreground mb-3">
+          Доступны при генерации. Официальные id API: v0-mini, v0-pro, v0-max, v0-max-fast
+          (v0-auto устарел и обрабатывается как v0-pro). Без выбора v0 использует v0-pro.
+        </p>
+        <div className="flex flex-wrap items-end gap-2 mb-4">
+          <div className="w-40">
+            <Input
+              placeholder="Название (V0 Pro)"
+              value={modelName}
+              onChange={(e) => setModelName(e.target.value)}
+            />
+          </div>
+          <div className="w-40">
+            <Input
+              placeholder="v0 id (v0-pro)"
+              value={modelV0Id}
+              onChange={(e) => setModelV0Id(e.target.value)}
+            />
+          </div>
+          <div className="flex-1 min-w-44">
+            <Input
+              placeholder="Описание (необязательно)"
+              value={modelDesc}
+              onChange={(e) => setModelDesc(e.target.value)}
+            />
+          </div>
+          <label className="flex items-center gap-1.5 text-sm cursor-pointer pb-1.5 select-none">
+            <input type="checkbox" checked={modelDefault} onChange={(e) => setModelDefault(e.target.checked)} />
+            по умолчанию
+          </label>
+          <Button
+            size="sm"
+            disabled={busy || !modelName.trim() || !/^v0-[a-z0-9-]+$/i.test(modelV0Id.trim())}
+            onClick={() => {
+              run(() => createFarmModel(modelName, modelV0Id, modelDesc, modelDefault), 'Модель добавлена')
+              setModelName('')
+              setModelV0Id('')
+              setModelDesc('')
+              setModelDefault(false)
+            }}
+          >
+            <Plus className="size-3.5" /> Добавить
+          </Button>
+        </div>
+        {overview.models.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            Моделей нет — без выбора v0 использует v0-pro. Запустите{' '}
+            <code className="rounded bg-background px-1.5 py-0.5 border border-border">pnpm seed:farm</code>.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {overview.models.map((m) => (
+              <div
+                key={m.id}
+                className="flex items-center gap-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
+              >
+                <span className="font-medium">{m.name}</span>
+                <code className="rounded bg-background border border-border px-1.5 py-0.5 text-xs">
+                  {m.v0ModelId}
+                </code>
+                {m.description && <span className="text-xs text-muted-foreground">{m.description}</span>}
+                {m.isDefault && (
+                  <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-700 dark:text-emerald-400">
+                    по умолчанию
+                  </span>
+                )}
+                <div className="ml-auto flex gap-1">
+                  {!m.isDefault && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => run(() => setFarmModelDefault(m.id), 'Модель по умолчанию')}
+                    >
+                      По умолчанию
+                    </Button>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-destructive hover:text-destructive"
+                    disabled={busy}
+                    onClick={() => run(() => deleteFarmModel(m.id), 'Модель удалена')}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </Button>
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </section>

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { ExternalLink, Loader2, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -12,22 +12,48 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { getFarmModelsForUser } from '@/app/actions/farm'
 
+type FarmModel = { id: string; name: string; v0ModelId: string; isDefault: boolean }
 type Result = { chatId: string; files: string[]; webUrl: string }
 
 /**
  * V0 Farm — генерация через пул v0-ключей.
  * Промпт уходит в официальный API v0 (api.v0.dev); при исчерпании баланса
  * ключ автоматически уходит в кулдаун (31 день), генерация продолжается на
- * следующем готовом ключе. Файлы сохраняются в IDE-чат — превью и редактор
- * подхватывают их сразу.
+ * следующем готовом ключе. Можно выбрать модель (настраивается в админке) и
+ * продолжить работу в том же IDE-чате — файлы и превью обновляются на месте.
  */
 export function FarmDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const [prompt, setPrompt] = useState('')
+  const [models, setModels] = useState<FarmModel[]>([])
+  const [modelId, setModelId] = useState('')
+  const [continueChat, setContinueChat] = useState(false)
+  const [lastChatId, setLastChatId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<Result | null>(null)
   const [error, setError] = useState<string | null>(null)
   const router = useRouter()
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    getFarmModelsForUser()
+      .then((rows) => {
+        if (cancelled) return
+        setModels(rows)
+        const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('farm_model_id') : null
+        const remembered = saved && rows.some((m) => m.id === saved) ? saved : ''
+        setModelId(remembered || rows.find((m) => m.isDefault)?.id || rows[0]?.id || '')
+        const lastChat = typeof localStorage !== 'undefined' ? localStorage.getItem('farm_last_chat_id') : null
+        setLastChatId(lastChat)
+        setContinueChat(Boolean(lastChat))
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [open])
 
   async function generate() {
     const p = prompt.trim()
@@ -36,10 +62,11 @@ export function FarmDialog({ open, onOpenChange }: { open: boolean; onOpenChange
     setError(null)
     setResult(null)
     try {
+      const chatIdIn = continueChat && lastChatId ? lastChatId : undefined
       const res = await fetch('/api/farm/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: p }),
+        body: JSON.stringify({ prompt: p, modelId: modelId || undefined, chatId: chatIdIn }),
       })
       const data = await res.json().catch(() => null)
       if (!res.ok || !data?.ok) {
@@ -49,6 +76,11 @@ export function FarmDialog({ open, onOpenChange }: { open: boolean; onOpenChange
       }
       setResult({ chatId: data.chatId, files: data.files ?? [], webUrl: data.webUrl ?? '' })
       setPrompt('')
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('farm_last_chat_id', data.chatId)
+        if (modelId) localStorage.setItem('farm_model_id', modelId)
+      }
+      setLastChatId(data.chatId)
     } catch {
       setError('Сетевая ошибка — попробуйте ещё раз')
     } finally {
@@ -63,10 +95,27 @@ export function FarmDialog({ open, onOpenChange }: { open: boolean; onOpenChange
           <DialogTitle>V0 Farm — генерация</DialogTitle>
           <DialogDescription>
             Промпт уходит в v0 через пул ключей: при исчерпании баланса ключ переключается
-            автоматически (кулдаун 31 день), сессия не прерывается. Результат — файлы в новом
-            IDE-чате с превью.
+            автоматически (кулдаун 31 день), сессия не прерывается. Результат — файлы в IDE-чате
+            с превью.
           </DialogDescription>
         </DialogHeader>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="text-xs text-muted-foreground">Модель:</label>
+          <select
+            className="h-9 flex-1 min-w-40 rounded-md border border-border bg-background px-2 text-sm"
+            value={modelId}
+            onChange={(e) => setModelId(e.target.value)}
+          >
+            {models.length === 0 && <option value="">v0-pro (по умолчанию)</option>}
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+                {m.isDefault ? ' (по умолчанию)' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
 
         <Textarea
           value={prompt}
@@ -75,15 +124,29 @@ export function FarmDialog({ open, onOpenChange }: { open: boolean; onOpenChange
           rows={5}
         />
 
-        <div className="flex items-center justify-end gap-2">
-          {busy && (
-            <span className="text-xs text-muted-foreground flex items-center gap-1.5">
-              <Loader2 className="size-3.5 animate-spin" /> v0 генерирует (до 10 минут)…
-            </span>
+        <div className="flex items-center justify-between gap-2">
+          {lastChatId ? (
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={continueChat}
+                onChange={(e) => setContinueChat(e.target.checked)}
+              />
+              продолжать в том же чате
+            </label>
+          ) : (
+            <span className="text-xs text-muted-foreground">Результат попадёт в новый IDE-чат.</span>
           )}
-          <Button onClick={generate} disabled={busy || !prompt.trim()}>
-            <Sparkles className="size-4" /> Сгенерировать
-          </Button>
+          <div className="flex items-center gap-2">
+            {busy && (
+              <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+                <Loader2 className="size-3.5 animate-spin" /> v0 генерирует (до 10 минут)…
+              </span>
+            )}
+            <Button onClick={generate} disabled={busy || !prompt.trim()}>
+              <Sparkles className="size-4" /> Сгенерировать
+            </Button>
+          </div>
         </div>
 
         {error && (

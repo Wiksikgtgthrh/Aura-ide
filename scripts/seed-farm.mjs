@@ -2,8 +2,9 @@
 
 /**
  * seed-farm.mjs
- * Регистрирует плагин «V0 Farm» в таблице plugins (hidden — виден только
- * админам; доступ к генерации выдают farm_assignments).
+ * Регистрирует плагин «V0 Farm» (hidden — виден только админам) и добавляет
+ * стандартные модели v0 (официальные id: v0-mini / v0-pro / v0-max /
+ * v0-max-fast; v0-auto устарел → обрабатывается как v0-pro).
  *
  * Использование:
  *   pnpm seed:farm
@@ -56,7 +57,7 @@ const PLUGIN = {
   description:
     'Пул v0-ключей с ротацией и кулдауном 31 день: админ выдаёт группы ключей пользователям/тарифам/себе, генерация идёт через официальный API v0 без потери сессии.',
   author: 'Aura Team',
-  version: '1.0.0',
+  version: '1.1.0',
   type: 'utility',
   scope: 'system-ui',
   icon: 'Farm',
@@ -65,16 +66,47 @@ const PLUGIN = {
     sidebarIcon: 'Farm',
     dialogComponent: 'FarmDialog',
     whereItAppears:
-      'Вкладка «V0 Farm» в админке (группы, ключи, выдачи, кулдауны) + кнопка генерации в сайдбаре для админов и пользователей с выданными ключами.',
-    docs: 'Админ добавляет ключи вида «Bearer vcp_...» в группы и выдаёт группы конкретному пользователю, тарифу, всем админам или всем. При исчерпании баланса ключ уходит в кулдаун на 31 день (обратный отсчёт в админке) и возвращается в пул готовых. Генерация использует официальный API v0 (https://api.v0.dev/v1).',
+      'Вкладка «V0 Farm» в админке (группы, ключи, модели, выдачи, кулдауны) + кнопка генерации в сайдбаре для админов и пользователей с выданными ключами.',
+    docs: 'Админ добавляет ключи вида «Bearer vcp_...» в группы, настраивает модели v0 и выдаёт группы конкретному пользователю, тарифу, всем админам или всем. При исчерпании баланса ключ уходит в кулдаун на 31 день (обратный отсчёт в админке) и возвращается в пул готовых. При генерации можно выбрать модель (v0-mini / v0-pro / v0-max / v0-max-fast) и продолжить работу в том же IDE-чате.',
   }),
   priceRub: 0,
 };
 
+const MODELS = [
+  {
+    name: 'V0 Mini',
+    v0ModelId: 'v0-mini',
+    description: 'Быстрая модель для простых задач',
+    isDefault: false,
+    sortOrder: 10,
+  },
+  {
+    name: 'V0 Pro',
+    v0ModelId: 'v0-pro',
+    description: 'Стандартная модель (по умолчанию)',
+    isDefault: true,
+    sortOrder: 20,
+  },
+  {
+    name: 'V0 Max',
+    v0ModelId: 'v0-max',
+    description: 'Максимальное качество',
+    isDefault: false,
+    sortOrder: 30,
+  },
+  {
+    name: 'V0 Max Fast',
+    v0ModelId: 'v0-max-fast',
+    description: 'Максимальное качество, быстрее',
+    isDefault: false,
+    sortOrder: 40,
+  },
+];
+
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 try {
-  const res = await pool.query(
+  await pool.query(
     `INSERT INTO plugins
        ("slug", "name", "description", "author", "version", "type", "scope", "icon", "hidden", "manifest", "priceRub")
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -103,6 +135,16 @@ try {
     ],
   );
   console.log(`✅ Плагин «${PLUGIN.name}» (${PLUGIN.slug}) записан/обновлён.`);
+
+  for (const m of MODELS) {
+    await pool.query(
+      `INSERT INTO farm_models ("name", "v0ModelId", "description", "isDefault", "sortOrder")
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT ("v0ModelId") DO NOTHING`,
+      [m.name, m.v0ModelId, m.description, m.isDefault, m.sortOrder],
+    );
+  }
+  console.log(`✅ Добавлены модели v0 по умолчанию: ${MODELS.map((m) => m.v0ModelId).join(', ')}.`);
 } finally {
   await pool.end();
 }

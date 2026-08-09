@@ -4,7 +4,7 @@ import { and, eq } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import { chats } from '@/lib/db/schema'
 import { getSession } from '@/lib/session'
-import { generateWithFarm, saveFarmFilesToProject } from '@/lib/farm'
+import { generateWithFarm, getFarmModels, saveFarmFilesToProject } from '@/lib/farm'
 import { createChatForUser, loadChatMessagesFresh, saveChatMessages } from '@/lib/chat-store'
 
 // v0 генерирует синхронно (до 10 минут). 300s — потолок Fluid Compute;
@@ -31,6 +31,7 @@ export async function POST(req: Request) {
   }
   const systemPrompt = body?.systemPrompt ? String(body.systemPrompt).slice(0, 4000) : undefined
   const chatIdIn = body?.chatId ? String(body.chatId) : undefined
+  const modelIdIn = body?.modelId ? String(body.modelId) : undefined
 
   // Продолжение возможно только в свой чат
   if (chatIdIn) {
@@ -43,11 +44,23 @@ export async function POST(req: Request) {
     }
   }
 
+  // Модель выбирается из настроек админки (farm_models) и передаётся в API v0
+  let v0ModelId: string | undefined
+  if (modelIdIn) {
+    const models = await getFarmModels()
+    const model = models.find((m) => m.id === modelIdIn && m.enabled)
+    if (!model) {
+      return NextResponse.json({ ok: false, error: 'Модель не найдена' }, { status: 400 })
+    }
+    v0ModelId = model.v0ModelId
+  }
+
   const result = await generateWithFarm({
     userId: session.user.id,
     prompt,
     systemPrompt,
     chatId: chatIdIn,
+    modelId: v0ModelId,
   })
   if (!result.ok) {
     return NextResponse.json({ ok: false, errors: result.errors }, { status: 502 })

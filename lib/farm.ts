@@ -16,6 +16,7 @@ import { db } from '@/lib/db'
 import {
   farmAssignments,
   farmKeys,
+  farmModels,
   farmUsageLog,
   projectFiles,
   user,
@@ -96,10 +97,40 @@ export async function v0CreateChat(
   token: string,
   message: string,
   systemPrompt?: string,
+  modelId?: string,
 ): Promise<any> {
-  const body: Record<string, string> = { message }
+  const body: Record<string, unknown> = { message }
   if (systemPrompt) body.systemPrompt = systemPrompt
+  // Официальные id моделей v0: v0-mini / v0-pro / v0-max / v0-max-fast
+  // (v0-auto устарел → обрабатывается как v0-pro). Без конфигурации v0
+  // использует v0-pro по умолчанию.
+  if (modelId) body.modelConfiguration = { modelId }
   return v0Fetch(token, '/chats', { method: 'POST', body, timeoutMs: V0_CREATE_TIMEOUT_MS })
+}
+
+/** Модели v0, настроенные в админке (включённые, по порядку). */
+export async function getFarmModels(): Promise<
+  {
+    id: string
+    name: string
+    v0ModelId: string
+    description: string
+    isDefault: boolean
+    enabled: boolean
+  }[]
+> {
+  const rows = await db
+    .select({
+      id: farmModels.id,
+      name: farmModels.name,
+      v0ModelId: farmModels.v0ModelId,
+      description: farmModels.description,
+      isDefault: farmModels.isDefault,
+      enabled: farmModels.enabled,
+    })
+    .from(farmModels)
+    .orderBy(farmModels.sortOrder, farmModels.name)
+  return rows
 }
 
 /** Лёгкий запрос для проверки ключа: 200 = рабочий, 401/403 = мёртвый. */
@@ -233,6 +264,8 @@ export type FarmGenerationInput = {
   prompt: string
   systemPrompt?: string
   chatId?: string
+  /** v0ModelId (например 'v0-pro') — из настроек моделей в админке. */
+  modelId?: string
 }
 
 export type FarmGenerationResult =
@@ -277,7 +310,7 @@ export async function generateWithFarm(
   for (const key of keys) {
     const tag = key.label || key.id.slice(0, 8)
     try {
-      const chat = await v0CreateChat(key.token, input.prompt, input.systemPrompt)
+      const chat = await v0CreateChat(key.token, input.prompt, input.systemPrompt, input.modelId)
       const files = extractV0Files(chat).slice(0, 200)
       await markKeySuccess(key.id)
       await db
@@ -288,6 +321,7 @@ export async function generateWithFarm(
           groupId: key.groupId,
           keyId: key.id,
           prompt: input.prompt.slice(0, 2000),
+          model: input.modelId ?? '',
           status: 'ok',
         })
         .catch(() => {}) // лог не должен ронять генерацию
@@ -324,6 +358,7 @@ export async function generateWithFarm(
             groupId: key.groupId,
             keyId: key.id,
             prompt: input.prompt.slice(0, 2000),
+            model: input.modelId ?? '',
             status: 'exhausted',
             error: reason.slice(0, 500),
           })

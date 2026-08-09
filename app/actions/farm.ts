@@ -6,13 +6,14 @@ import {
   farmAssignments,
   farmKeyGroups,
   farmKeys,
+  farmModels,
   farmUsageLog,
   user,
 } from '@/lib/db/schema'
 import { decryptSecret, encryptSecret } from '@/lib/crypto'
 import { requireAdmin } from '@/lib/admin'
 import { getSession } from '@/lib/session'
-import { FARM_COOLDOWN_MS, restoreReadyKeys, v0Probe, type FarmKeyStatus } from '@/lib/farm'
+import { FARM_COOLDOWN_MS, getFarmModels, restoreReadyKeys, v0Probe, type FarmKeyStatus } from '@/lib/farm'
 
 export type FarmKeyRow = {
   id: string
@@ -54,11 +55,21 @@ export type FarmLogRow = {
   createdAt: string
 }
 
+export type FarmModelRow = {
+  id: string
+  name: string
+  v0ModelId: string
+  description: string
+  isDefault: boolean
+  enabled: boolean
+}
+
 export type FarmOverview = {
   groups: FarmGroupRow[]
   keys: FarmKeyRow[]
   assignments: FarmAssignmentRow[]
   logs: FarmLogRow[]
+  models: FarmModelRow[]
 }
 
 function maskV0Key(encrypted: string): string {
@@ -83,7 +94,7 @@ export async function getFarmOverview(): Promise<FarmOverview | null> {
   try {
     await restoreReadyKeys()
 
-    const [groups, keys, assignments, logs] = await Promise.all([
+    const [groups, keys, assignments, logs, models] = await Promise.all([
       db.select().from(farmKeyGroups).orderBy(asc(farmKeyGroups.createdAt)),
       db.select().from(farmKeys).orderBy(desc(farmKeys.createdAt)),
       db
@@ -109,6 +120,7 @@ export async function getFarmOverview(): Promise<FarmOverview | null> {
         .leftJoin(user, eq(farmUsageLog.userId, user.id))
         .orderBy(desc(farmUsageLog.createdAt))
         .limit(50),
+      getFarmModels().catch(() => []),
     ])
 
     const groupName = new Map(groups.map((g) => [g.id, g.name]))
@@ -152,6 +164,14 @@ export async function getFarmOverview(): Promise<FarmOverview | null> {
         status: l.status,
         error: l.error,
         createdAt: iso(l.createdAt) ?? '',
+      })),
+      models: models.map((m) => ({
+        id: m.id,
+        name: m.name,
+        v0ModelId: m.v0ModelId,
+        description: m.description,
+        isDefault: m.isDefault,
+        enabled: m.enabled,
       })),
     }
   } catch {
@@ -402,6 +422,86 @@ export async function getFarmPlans(): Promise<{ key: string; title: string }[]> 
     const { plans } = await import('@/lib/db/schema')
     const rows = await db.select({ key: plans.key, title: plans.title }).from(plans)
     return rows
+  } catch {
+    return []
+  }
+}
+
+
+// ---- Admin: модели v0 ------------------------------------------------------
+
+const V0_MODEL_ID_RE = /^v0-[a-z0-9-]+$/i
+
+export async function createFarmModel(
+  name: string,
+  v0ModelId: string,
+  description = '',
+  isDefault = false,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!(await requireAdmin('admin'))) return { ok: false, error: 'Unauthorized' }
+  const cleanName = name.trim().slice(0, 80)
+  const cleanId = v0ModelId.trim().toLowerCase()
+  if (!cleanName) return { ok: false, error: 'Введите название модели' }
+  if (!V0_MODEL_ID_RE.test(cleanId)) {
+    return {
+      ok: false,
+      error: 'id модели должен быть вида v0-pro (официальные: v0-mini, v0-pro, v0-max, v0-max-fast)',
+    }
+  }
+  try {
+    const dup = await db
+      .select({ id: farmModels.id })
+      .from(farmModels)
+      .where(eq(farmModels.v0ModelId, cleanId))
+    if (dup.length > 0) return { ok: false, error: 'Модель с таким v0 id уже есть' }
+    if (isDefault) {
+      await db.update(farmModels).set({ isDefault: false, updatedAt: new Date() })
+    }
+    await db.insert(farmModels).values({
+      name: cleanName,
+      v0ModelId: cleanId,
+      description: description.trim().slice(0, 200),
+      isDefault,
+    })
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'Ошибка БД' }
+  }
+}
+
+export async function deleteFarmModel(id: string): Promise<boolean> {
+  if (!(await requireAdmin('admin'))) return false
+  try {
+    await db.delete(farmModels).where(eq(farmModels.id, id))
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function setFarmModelDefault(id: string): Promise<boolean> {
+  if (!(await requireAdmin('admin'))) return false
+  try {
+    await db.update(farmModels).set({ isDefault: false, updatedAt: new Date() })
+    await db.update(farmModels).set({ isDefault: true, updatedAt: new Date() }).where(eq(farmModels.id, id))
+    return true
+  } catch {
+    return false
+  }
+}
+
+// ---- Пользователь: модели для диалога генерации ----------------------------
+
+export async function getFarmModelsForUser(): Promise<
+  { id: string; name: string; v0ModelId: string; isDefault: boolean }[]
+> {
+  const session = await getSession()
+  if (!session?.user) return []
+  try {
+    const rows = await getFarmModels()
+    return rows
+      .filter((m) => m.enabled)
+      .map((m) => ({ id: m.id, name: m.name, v0ModelId: m.v0ModelId, isDefault: m.isDefault }))
   } catch {
     return []
   }

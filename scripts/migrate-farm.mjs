@@ -2,7 +2,9 @@
 
 /**
  * migrate-farm.mjs
- * Создаёт таблицы V0 Farm: группы ключей, ключи, выдачи, лог использования.
+ * Создаёт таблицы V0 Farm: группы ключей, ключи, выдачи, лог использования,
+ * модели. Идемпотентно — безопасно перезапускать (CREATE IF NOT EXISTS +
+ * ALTER ADD COLUMN IF NOT EXISTS для уже существующих БД).
  *
  * Использование:
  *   pnpm migrate:farm
@@ -88,10 +90,26 @@ CREATE TABLE IF NOT EXISTS "farm_usage_log" (
   "groupId" text,
   "keyId" text,
   "prompt" text NOT NULL DEFAULT '',
+  "model" text NOT NULL DEFAULT '',
   "status" text NOT NULL,
   "error" text NOT NULL DEFAULT '',
   "createdAt" timestamp NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS "farm_models" (
+  "id" text PRIMARY KEY DEFAULT gen_random_uuid(),
+  "name" text NOT NULL,
+  "v0ModelId" text NOT NULL UNIQUE,
+  "description" text NOT NULL DEFAULT '',
+  "isDefault" boolean NOT NULL DEFAULT false,
+  "enabled" boolean NOT NULL DEFAULT true,
+  "sortOrder" integer NOT NULL DEFAULT 0,
+  "createdAt" timestamp NOT NULL DEFAULT now(),
+  "updatedAt" timestamp NOT NULL DEFAULT now()
+);
+
+-- Догоняем уже существующие БД (если миграция запускалась до добавления колонки)
+ALTER TABLE "farm_usage_log" ADD COLUMN IF NOT EXISTS "model" text NOT NULL DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS "farm_keys_group_idx" ON "farm_keys" ("groupId");
 CREATE INDEX IF NOT EXISTS "farm_keys_status_idx" ON "farm_keys" ("status");
@@ -103,7 +121,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 try {
   await pool.query(SQL);
-  console.log('✅ Таблицы V0 Farm созданы (idempotent).');
+  console.log('✅ Таблицы V0 Farm созданы/обновлены (idempotent).');
 } finally {
   await pool.end();
 }

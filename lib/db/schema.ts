@@ -534,8 +534,24 @@ export const farmUsageLog = pgTable('farm_usage_log', {
   groupId: text('groupId'),
   keyId: text('keyId'),
   prompt: text('prompt').notNull().default(''),
+  model: text('model').notNull().default(''),
   // 'ok' | 'exhausted' | 'error'
   status: text('status').notNull(),
   error: text('error').notNull().default(''),
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
+
+// Модели v0, доступные при генерации (официальные id: v0-mini / v0-pro /
+// v0-max / v0-max-fast; v0-auto устарел и обрабатывается как v0-pro).
+export const farmModels = pgTable('farm_models', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  name: text('name').notNull(),
+  v0ModelId: text('v0ModelId').notNull().unique(),
+  description: text('description').notNull().default(''),
+  isDefault: boolean('isDefault').notNull().default(false),
+  enabled: boolean('enabled').notNull().default(true),
+  sortOrder: integer('sortOrder').notNull().default(0),
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+  updatedAt: timestamp('updatedAt').notNull().defaultNow(),
+})
+
