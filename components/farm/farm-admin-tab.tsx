@@ -20,6 +20,7 @@ import {
   searchFarmUsers,
   setFarmKeyStatus,
   setFarmModelDefault,
+  updateFarmModel,
   type FarmOverview,
 } from '@/app/actions/farm'
 
@@ -71,6 +72,10 @@ export function FarmAdminTab() {
   const [modelV0Id, setModelV0Id] = useState('')
   const [modelDesc, setModelDesc] = useState('')
   const [modelDefault, setModelDefault] = useState(false)
+  const [editingModel, setEditingModel] = useState<string | null>(null)
+  const [editModelName, setEditModelName] = useState('')
+  const [editModelV0Id, setEditModelV0Id] = useState('')
+  const [editModelDesc, setEditModelDesc] = useState('')
   const [assignGroupId, setAssignGroupId] = useState('')
   const [assignType, setAssignType] = useState('user')
   const [assignPlan, setAssignPlan] = useState('')
@@ -385,8 +390,11 @@ export function FarmAdminTab() {
       <section className="rounded-lg border border-border bg-card p-4">
         <h3 className="text-sm font-medium mb-1">Модели v0</h3>
         <p className="text-xs text-muted-foreground mb-3">
-          Доступны при генерации. Официальные id API: v0-mini, v0-pro, v0-max, v0-max-fast
-          (v0-auto устарел и обрабатывается как v0-pro). Без выбора v0 использует v0-pro.
+          Доступны при генерации. Тиры API: v0-mini, v0-pro, v0-max, v0-max-fast (v0-auto устарел
+          → v0-pro). Конкретные модели v0.app — в формате creator/model, проверены на боевом API:
+          anthropic/claude-opus-5, anthropic/claude-opus-5-fast, openai/gpt-5.6-sol,
+          anthropic/claude-fable-5, moonshotai/kimi-k3. Если API отвергнет id, ошибка покажется
+          при генерации — id можно поправить кнопкой «Изменить».
         </p>
         <div className="flex flex-wrap items-end gap-2 mb-4">
           <div className="w-40">
@@ -416,7 +424,7 @@ export function FarmAdminTab() {
           </label>
           <Button
             size="sm"
-            disabled={busy || !modelName.trim() || !/^v0-[a-z0-9-]+$/i.test(modelV0Id.trim())}
+            disabled={busy || !modelName.trim() || !/^[a-z0-9][a-z0-9._\-\/]*$/i.test(modelV0Id.trim())}
             onClick={() => {
               run(() => createFarmModel(modelName, modelV0Id, modelDesc, modelDefault), 'Модель добавлена')
               setModelName('')
@@ -435,11 +443,47 @@ export function FarmAdminTab() {
           </p>
         ) : (
           <div className="space-y-2">
-            {overview.models.map((m) => (
-              <div
-                key={m.id}
-                className="flex items-center gap-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
-              >
+            {overview.models.map((m) =>
+              editingModel === m.id ? (
+                <div
+                  key={m.id}
+                  className="flex flex-wrap items-end gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
+                >
+                  <div className="w-36">
+                    <Input value={editModelName} onChange={(e) => setEditModelName(e.target.value)} />
+                  </div>
+                  <div className="w-40">
+                    <Input value={editModelV0Id} onChange={(e) => setEditModelV0Id(e.target.value)} />
+                  </div>
+                  <div className="flex-1 min-w-40">
+                    <Input value={editModelDesc} onChange={(e) => setEditModelDesc(e.target.value)} />
+                  </div>
+                  <Button
+                    size="sm"
+                    disabled={
+                      busy ||
+                      !editModelName.trim() ||
+                      !/^[a-z0-9][a-z0-9._\-\/]*$/i.test(editModelV0Id.trim())
+                    }
+                    onClick={() => {
+                      run(
+                        () => updateFarmModel(m.id, editModelName, editModelV0Id, editModelDesc),
+                        'Модель обновлена',
+                      )
+                      setEditingModel(null)
+                    }}
+                  >
+                    Сохранить
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => setEditingModel(null)}>
+                    Отмена
+                  </Button>
+                </div>
+              ) : (
+                <div
+                  key={m.id}
+                  className="flex items-center gap-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
+                >
                 <span className="font-medium">{m.name}</span>
                 <code className="rounded bg-background border border-border px-1.5 py-0.5 text-xs">
                   {m.v0ModelId}
@@ -462,6 +506,19 @@ export function FarmAdminTab() {
                     </Button>
                   )}
                   <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => {
+                      setEditingModel(m.id)
+                      setEditModelName(m.name)
+                      setEditModelV0Id(m.v0ModelId)
+                      setEditModelDesc(m.description)
+                    }}
+                  >
+                    Изменить
+                  </Button>
+                  <Button
                     variant="ghost"
                     size="sm"
                     className="text-destructive hover:text-destructive"
@@ -472,6 +529,7 @@ export function FarmAdminTab() {
                   </Button>
                 </div>
               </div>
+              )
             ))}
           </div>
         )}

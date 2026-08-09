@@ -101,6 +101,41 @@ const MODELS = [
     isDefault: false,
     sortOrder: 40,
   },
+  {
+    name: 'Opus 5',
+    v0ModelId: 'anthropic/claude-opus-5',
+    description: 'Claude Opus 5 — максимум качества',
+    isDefault: false,
+    sortOrder: 50,
+  },
+  {
+    name: 'Opus 5 Fast',
+    v0ModelId: 'anthropic/claude-opus-5-fast',
+    description: 'Claude Opus 5 — быстрый вариант',
+    isDefault: false,
+    sortOrder: 60,
+  },
+  {
+    name: 'GPT 5.6 Sol',
+    v0ModelId: 'openai/gpt-5.6-sol',
+    description: 'OpenAI GPT-5.6 Sol',
+    isDefault: false,
+    sortOrder: 70,
+  },
+  {
+    name: 'Fable 5',
+    v0ModelId: 'anthropic/claude-fable-5',
+    description: 'Claude Fable 5',
+    isDefault: false,
+    sortOrder: 80,
+  },
+  {
+    name: 'Kimi K3',
+    v0ModelId: 'moonshotai/kimi-k3',
+    description: 'Moonshot Kimi K3',
+    isDefault: false,
+    sortOrder: 90,
+  },
 ];
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });

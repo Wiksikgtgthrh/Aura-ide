@@ -1,6 +1,6 @@
 'use server'
 
-import { and, asc, desc, eq, like, or } from 'drizzle-orm'
+import { and, asc, desc, eq, like, or, sql } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import {
   farmAssignments,
@@ -430,7 +430,9 @@ export async function getFarmPlans(): Promise<{ key: string; title: string }[]> 
 
 // ---- Admin: модели v0 ------------------------------------------------------
 
-const V0_MODEL_ID_RE = /^v0-[a-z0-9-]+$/i
+// id модели: тиры v0 (v0-pro) или gateway-формат creator/model (проверено на боевом API:
+// anthropic/claude-opus-5, openai/gpt-5.6-sol, moonshotai/kimi-k3 и т.д.)
+const V0_MODEL_ID_RE = /^[a-z0-9][a-z0-9._\-\/]*$/i
 
 export async function createFarmModel(
   name: string,
@@ -445,7 +447,7 @@ export async function createFarmModel(
   if (!V0_MODEL_ID_RE.test(cleanId)) {
     return {
       ok: false,
-      error: 'id модели должен быть вида v0-pro (официальные: v0-mini, v0-pro, v0-max, v0-max-fast)',
+      error: 'id модели: v0-pro / anthropic/claude-opus-5 / openai/gpt-5.6-sol (формат creator/model)',
     }
   }
   try {
@@ -463,6 +465,40 @@ export async function createFarmModel(
       description: description.trim().slice(0, 200),
       isDefault,
     })
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'Ошибка БД' }
+  }
+}
+
+export async function updateFarmModel(
+  id: string,
+  name: string,
+  v0ModelId: string,
+  description = '',
+): Promise<{ ok: boolean; error?: string }> {
+  if (!(await requireAdmin('admin'))) return { ok: false, error: 'Unauthorized' }
+  const cleanName = name.trim().slice(0, 80)
+  const cleanId = v0ModelId.trim().toLowerCase()
+  if (!cleanName) return { ok: false, error: 'Введите название модели' }
+  if (!V0_MODEL_ID_RE.test(cleanId)) {
+    return { ok: false, error: 'id модели: формат creator/model (например anthropic/claude-opus-5)' }
+  }
+  try {
+    const dup = await db
+      .select({ id: farmModels.id })
+      .from(farmModels)
+      .where(and(eq(farmModels.v0ModelId, cleanId), sql`${farmModels.id} <> ${id}`))
+    if (dup.length > 0) return { ok: false, error: 'Модель с таким v0 id уже есть' }
+    await db
+      .update(farmModels)
+      .set({
+        name: cleanName,
+        v0ModelId: cleanId,
+        description: description.trim().slice(0, 200),
+        updatedAt: new Date(),
+      })
+      .where(eq(farmModels.id, id))
     return { ok: true }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'Ошибка БД' }
