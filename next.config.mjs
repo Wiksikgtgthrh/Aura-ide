@@ -61,6 +61,14 @@ const nextConfig = {
   turbopack: {
     root: projectRoot,
   },
+
+  // RAM fix: disable the Turbopack dev filesystem cache. A cache written by
+  // one Next version and restored by another can grow unbounded (~16 GB RSS,
+  // vercel/next.js#94915); this flag keeps dev safe even with older caches on
+  // disk. Remove it once you've verified dev stays stable on 16.3.0.
+  experimental: {
+    turbopackFileSystemCacheForDev: false,
+  },
   // Tree-shake lucide-react: import only the icons actually used instead of
   // the entire library (~600 icons). This alone can cut 100-300 KB from the
   // initial JS bundle.
