@@ -68,6 +68,15 @@ const nextConfig = {
   // disk. Remove it once you've verified dev stays stable on 16.3.0.
   experimental: {
     turbopackFileSystemCacheForDev: false,
+    // Next 16.3 validates instant navigations by default in cacheComponents
+    // apps. The (app) shell streams via async layout + client-only
+    // next/dynamic dialogs (ssr: false), so validation bails out for every
+    // route inside the group ("Could not validate `instant` ... next/dynamic").
+    // No segment in this app uses `instant` explicitly, so only validate
+    // explicit ones (dev-only warning level).
+    instantInsights: {
+      validationLevel: 'manual-warning',
+    },
   },
   // Tree-shake lucide-react: import only the icons actually used instead of
   // the entire library (~600 icons). This alone can cut 100-300 KB from the
