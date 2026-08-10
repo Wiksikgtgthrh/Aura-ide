@@ -94,7 +94,6 @@ async function AppShellLoader({
         userTag={profile.tag}
         isAnonymous={profile.isAnonymous}
         initialChats={initialChats}
-        initialInstalledPlugins={initialInstalledPlugins}
         role={role}
       />
       <AppContentArea

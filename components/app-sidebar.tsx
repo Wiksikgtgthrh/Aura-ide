@@ -16,8 +16,6 @@ import {
 import type { ChatListItem } from '@/lib/chat-store'
 import { Button } from '@/components/ui/button'
 import { getMyFarmAccess } from '@/app/actions/farm'
-import { getInstalledPlugins } from '@/app/actions/plugins'
-import type { InstalledPlugin } from '@/app/actions/plugins'
 import dynamic from 'next/dynamic'
 
 const GithubIconImportDialog = dynamic(
@@ -259,7 +257,6 @@ export function AppSidebar({
   userTag,
   isAnonymous,
   initialChats,
-  initialInstalledPlugins,
   role = 'user',
 }: {
   userId: string
@@ -269,9 +266,6 @@ export function AppSidebar({
   userTag?: string
   isAnonymous?: boolean
   initialChats?: ChatListItem[]
-  /** Установленные плагины — для условного рендера кнопок плагинов
-   *  (например, V0 Farm) в сайдбаре. Прелоадится в layout. */
-  initialInstalledPlugins?: InstalledPlugin[]
   /** Platform role — shows the «Админка» entry for admin/superadmin. */
   role?: 'user' | 'admin' | 'superadmin'
 }) {
@@ -305,39 +299,22 @@ export function AppSidebar({
   const [favoritesOpen, setFavoritesOpen] = useState(true)
   const [recentOpen, setRecentOpen] = useState(true)
   const [searchOpen, setSearchOpen] = useState(false)
-  // V0 Farm — кнопка плагина в сайдбаре. Диалог открывается только если
-  // плагин v0-farm установлен и включён. Дополнительно проверяем getMyFarmAccess,
-  // чтобы показывать кнопку только когда у пользователя есть назначенные ключи
-  // (или он админ) — иначе кнопка ведёт к пустому диалогу.
+  // V0 Farm — кнопка генерации в сайдбаре. Видна админам и пользователям, у
+  // которых есть назначенные группы ключей (проверка через getMyFarmAccess).
+  // Сам плагин v0-farm живёт в таблице plugins и управляется в редакторе
+  // плагина (админка → Плагины → v0-farm → «Управление V0 Farm»); кнопка
+  // сайдбара от установки плагина не зависит — это функциональный вход в
+  // диалог генерации.
   const [farmOpen, setFarmOpen] = useState(false)
   const [farmAccess, setFarmAccess] = useState(false)
 
-  const { data: pluginList } = useSWR<InstalledPlugin[]>(
-    'installed-plugins',
-    () => getInstalledPlugins(),
-    {
-      fallbackData: initialInstalledPlugins,
-      revalidateOnFocus: false,
-      revalidateOnMount: false,
-      dedupingInterval: 60_000,
-    },
-  )
-  // V0 Farm установлен и включён?
-  const v0FarmInstalled = (pluginList ?? []).some(
-    (p) => p.slug === 'v0-farm' && p.enabled,
-  )
-
   useEffect(() => {
-    if (!v0FarmInstalled) {
-      setFarmAccess(false)
-      return
-    }
     let cancelled = false
     getMyFarmAccess()
       .then((r) => { if (!cancelled) setFarmAccess(r.hasAccess) })
       .catch(() => {})
     return () => { cancelled = true }
-  }, [v0FarmInstalled])
+  }, [])
 
   const { data: chatList, mutate: mutateChats } = useSWR('chats', () => getChats(), {
     fallbackData: initialChats,
@@ -690,11 +667,10 @@ export function AppSidebar({
           )
         })}
 
-        {/* V0 Farm — плагин пула v0-ключей. Кнопка в сайдбаре появляется только
-            если плагин v0-farm установлен, включён и у пользователя есть
-            назначенные ключи (или он админ). Управление ключами — в админке
-            плагина (редактор плагина v0-farm → «Управление V0 Farm»). */}
-        {v0FarmInstalled && (role !== 'user' || farmAccess) && (
+        {/* V0 Farm — плагин пула v0-ключей. Кнопка видна админам и пользователям
+            с назначенными ключами. Управление ключами — в админке плагина
+            (Плагины → v0-farm → «Управление V0 Farm»). */}
+        {(role !== 'user' || farmAccess) && (
           <button
             type="button"
             onClick={() => setFarmOpen(true)}
@@ -884,7 +860,7 @@ export function AppSidebar({
     </aside>
     <GithubIconImportDialog open={githubOpen} onOpenChange={setGithubIconOpen} />
     <SearchDialog open={searchOpen} onOpenChange={setSearchOpen} chats={chatList ?? []} />
-    {v0FarmInstalled && <FarmDialog open={farmOpen} onOpenChange={setFarmOpen} />}
+    <FarmDialog open={farmOpen} onOpenChange={setFarmOpen} />
     </>
   )
 }
