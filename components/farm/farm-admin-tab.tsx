@@ -43,6 +43,11 @@ const TARGET_LABEL: Record<string, string> = {
   all: 'Все пользователи',
 }
 
+/** Полный токен ключа (тестовые ключи — маскировка не нужна), fallback на masked. */
+function keyDisplay(k: { token: string | null; masked: string }): string {
+  return k.token ?? k.masked ?? '—'
+}
+
 function formatCountdown(ms: number): string {
   if (ms <= 0) return 'готов'
   const d = Math.floor(ms / 86_400_000)
@@ -53,7 +58,7 @@ function formatCountdown(ms: number): string {
   return `${d}д ${pad(h)}:${pad(m)}:${pad(s)}`
 }
 
-export function FarmAdminTab() {
+export function FarmAdminTab({ embedded = false }: { embedded?: boolean } = {}) {
   const [overview, setOverview] = useState<FarmOverview | null>(null)
   const [plans, setPlans] = useState<{ key: string; title: string }[]>([])
   const [loading, setLoading] = useState(true)
@@ -183,19 +188,28 @@ export function FarmAdminTab() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-base font-semibold">V0 Farm — пул ключей v0</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Ключи вида «Bearer vcp_…» из v0.app/settings/keys. При исчерпании баланса ключ уходит в
-            кулдаун на 31 день и возвращается в пул готовых автоматически. Формат исправляется сам:
-            «Bearer%20vcp_…» из ссылки и «vcp_…» без префикса → «Bearer vcp_…».
-          </p>
+      {!embedded && (
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-semibold">V0 Farm — пул ключей v0</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Ключи вида «Bearer vcp_…» из v0.app/settings/keys. При исчерпании баланса ключ уходит в
+              кулдаун на 31 день и возвращается в пул готовых автоматически. Формат исправляется сам:
+              «Bearer%20vcp_…» из ссылки и «vcp_…» без префикса → «Bearer vcp_…».
+            </p>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => run(refresh, 'Обновлено')} disabled={busy}>
+            <RefreshCw className={`size-3.5 ${busy ? 'animate-spin' : ''}`} /> Обновить
+          </Button>
         </div>
-        <Button variant="outline" size="sm" onClick={() => run(refresh, 'Обновлено')} disabled={busy}>
-          <RefreshCw className={`size-3.5 ${busy ? 'animate-spin' : ''}`} /> Обновить
-        </Button>
-      </div>
+      )}
+      {embedded && (
+        <div className="flex justify-end">
+          <Button variant="outline" size="sm" onClick={() => run(refresh, 'Обновлено')} disabled={busy}>
+            <RefreshCw className={`size-3.5 ${busy ? 'animate-spin' : ''}`} /> Обновить
+          </Button>
+        </div>
+      )}
 
       {error && (
         <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
@@ -334,7 +348,7 @@ export function FarmAdminTab() {
                     <tr key={k.id} className="border-b border-border/50 align-top">
                       <td className="py-2 pr-3">{k.groupName}</td>
                       <td className="py-2 pr-3">{k.label || '—'}</td>
-                      <td className="py-2 pr-3 font-mono text-xs">{k.masked}</td>
+                      <td className="py-2 pr-3 font-mono text-xs break-all">{keyDisplay(k)}</td>
                       <td className="py-2 pr-3">
                         <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${STATUS_BADGE[k.status]}`}>
                           {k.status === 'cooldown' && <Timer className="size-3" />}
@@ -696,7 +710,7 @@ export function FarmAdminTab() {
               return (
                 <div key={k.id} className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="font-mono text-xs truncate">{k.masked}</span>
+                    <span className="font-mono text-xs truncate">{keyDisplay(k)}</span>
                     <span className="text-xs text-amber-700 dark:text-amber-400">
                       {formatCountdown(remaining)}
                     </span>
@@ -726,7 +740,7 @@ export function FarmAdminTab() {
                 key={k.id}
                 className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-700 dark:text-emerald-400"
               >
-                {k.masked} · {k.groupName}
+                {keyDisplay(k)} · {k.groupName}
               </span>
             ))}
           </div>

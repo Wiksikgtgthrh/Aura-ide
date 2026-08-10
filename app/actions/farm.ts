@@ -10,7 +10,7 @@ import {
   farmUsageLog,
   user,
 } from '@/lib/db/schema'
-import { decryptSecret, encryptSecret } from '@/lib/crypto'
+import { decryptSecret, encryptSecret, tryDecryptSecret } from '@/lib/crypto'
 import { requireAdmin } from '@/lib/admin'
 import { getSession } from '@/lib/session'
 import { FARM_COOLDOWN_MS, getFarmModels, restoreReadyKeys, v0Probe, type FarmKeyStatus } from '@/lib/farm'
@@ -21,6 +21,10 @@ export type FarmKeyRow = {
   groupName: string
   label: string
   masked: string
+  /** Полный расшифрованный токен «Bearer vcp_…» — показывается в админке плагина.
+   *  Ключи тестовые, поэтому маскировка не требуется. null, если расшифровать
+   *  не удалось (секрет сменился/другая среда). */
+  token: string | null
   status: FarmKeyStatus
   cooldownUntil: string | null
   cooldownReason: string
@@ -143,13 +147,14 @@ export async function getFarmOverview(): Promise<FarmOverview | null> {
         groupName: groupName.get(k.groupId) ?? '?',
         label: k.label,
         masked: maskV0Key(k.key),
+        token: tryDecryptSecret(k.key),
         status: k.status as FarmKeyStatus,
         cooldownUntil: iso(k.cooldownUntil),
         cooldownReason: k.cooldownReason,
         lastUsedAt: iso(k.lastUsedAt),
         lastError: k.lastError,
         usageCount: k.usageCount,
-        createdAt: iso(k.createdAt),
+        createdAt: iso(k.createdAt) ?? '',
       })),
       assignments: assignments.map((a) => ({
         id: a.id,

@@ -23,6 +23,7 @@ import {
 } from '@/app/actions/admin'
 import type { PluginAuthor, PluginMediaItem, PluginVersionEntry } from '@/lib/plugin-types'
 import { MarkdownEditor } from '@/components/markdown-editor'
+import { FarmAdminTab } from '@/components/farm/farm-admin-tab'
 
 /**
  * Админ-редактор плагина (магазин): базовые поля, markdown-документация с
@@ -367,6 +368,28 @@ export function PluginEditor({
         rows={2}
         className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none"
       />
+
+      {/* V0 Farm: управление ключами, группами, моделями и выдачами.
+          Секция видна только для плагина v0-farm — это его основная админка:
+          пул v0-ключей с ротацией и кулдауном, модели v0, назначения
+          пользователям/тарифам/админам/всем. Ключи тестовые — показываются
+          полностью (см. FarmKeyRow.token). */}
+      {d.slug === 'v0-farm' && (
+        <div className="rounded-xl border border-primary/30 bg-primary/[0.03] p-3">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-sm font-medium text-foreground">Управление V0 Farm</span>
+            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">
+              пул v0-ключей
+            </span>
+          </div>
+          <p className="mb-3 text-xs text-muted-foreground">
+            Ключи «Bearer vcp_…» шифруются на диске и показываются полностью — они тестовые.
+            При исчерпании баланса ключ уходит в кулдаун на 31 день, генерация продолжается
+            на следующем готовом ключе.
+          </p>
+          <FarmAdminTab embedded />
+        </div>
+      )}
 
       {/* Лендинг */}
       <div>

@@ -20,7 +20,6 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react'
-import { Sprout } from 'lucide-react'
 import {
   getAdminOverview,
   listUsers,
@@ -52,11 +51,10 @@ import {
   type AdminPlugin,
 } from '@/app/actions/admin'
 import { PluginEditor } from '@/components/admin-plugin-editor'
-import { FarmAdminTab } from '@/components/farm/farm-admin-tab'
 import type { Role } from '@/lib/admin'
 import type { PlatformLimits } from '@/lib/platform-settings'
 
-type Tab = 'overview' | 'users' | 'admins' | 'plans' | 'plugins' | 'limits' | 'farm'
+type Tab = 'overview' | 'users' | 'admins' | 'plans' | 'plugins' | 'limits'
 
 export function AdminContent({ isSuperadmin }: { isSuperadmin: boolean }) {
   const [tab, setTab] = useState<Tab>('overview')
@@ -67,7 +65,6 @@ export function AdminContent({ isSuperadmin }: { isSuperadmin: boolean }) {
     { key: 'admins', label: 'Админы', icon: <Shield className="size-4" /> },
     { key: 'plans', label: 'Тарифы', icon: <CreditCard className="size-4" /> },
     { key: 'plugins', label: 'Плагины', icon: <Puzzle className="size-4" /> },
-    { key: 'farm', label: 'V0 Farm', icon: <Sprout className="size-4" /> },
     { key: 'limits', label: 'Лимиты', icon: <SlidersHorizontal className="size-4" /> },
   ]
 
@@ -119,7 +116,6 @@ export function AdminContent({ isSuperadmin }: { isSuperadmin: boolean }) {
         )}
         {tab === 'plans' && <PlansTab />}
         {tab === 'plugins' && <PluginsTab />}
-        {tab === 'farm' && <FarmAdminTab />}
         {tab === 'limits' && <LimitsTab />}
       </div>
     </div>

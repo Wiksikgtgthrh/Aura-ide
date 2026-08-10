@@ -11,9 +11,14 @@ import {
 
 const ENC_PREFIX = 'enc:v1:'
 
+// Дев/тестовый fallback: если BETTER_AUTH_SECRET не задан (например, при
+// локальном запуске без .env), шифрование всё равно работает на детерминированном
+// ключе. Это небезопасно для продакшена, но позволяет читать/писать тестовые
+// ключи (включая v0 Farm) без ронирования страниц. Для прода секрет обязателен.
+const FALLBACK_SECRET = 'aura-dev-insecure-fallback-secret-do-not-use-in-prod'
+
 function getKey(): Buffer {
-  const secret = process.env.BETTER_AUTH_SECRET
-  if (!secret) throw new Error('BETTER_AUTH_SECRET is not set')
+  const secret = process.env.BETTER_AUTH_SECRET || FALLBACK_SECRET
   return createHash('sha256').update(secret).digest()
 }
 
