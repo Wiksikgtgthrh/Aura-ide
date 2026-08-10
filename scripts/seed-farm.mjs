@@ -14,6 +14,7 @@ import { Pool } from 'pg';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -145,10 +146,15 @@ const MODELS = [
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 try {
+  // id генерируем явно: в БД, созданной drizzle-kit, колонка id имеет
+  // DEFAULT только на уровне ORM ($defaultFn), а в SQL DEFAULT нет —
+  // сырой INSERT без id падает с 23502 NOT NULL. crypto.randomUUID() = тот
+  // же формат, что использует drizzle.
+  const pluginId = crypto.randomUUID();
   await pool.query(
     `INSERT INTO plugins
-       ("slug", "name", "description", "author", "version", "type", "scope", "icon", "hidden", "manifest", "priceRub")
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       ("id", "slug", "name", "description", "author", "version", "type", "scope", "icon", "hidden", "manifest", "priceRub")
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
      ON CONFLICT ("slug") DO UPDATE SET
        "name" = EXCLUDED."name",
        "description" = EXCLUDED."description",
@@ -160,6 +166,7 @@ try {
        "manifest" = EXCLUDED."manifest",
        "updatedAt" = now()`,
     [
+      pluginId,
       PLUGIN.slug,
       PLUGIN.name,
       PLUGIN.description,
@@ -177,10 +184,10 @@ try {
 
   for (const m of MODELS) {
     await pool.query(
-      `INSERT INTO farm_models ("name", "v0ModelId", "description", "isDefault", "sortOrder")
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO farm_models ("id", "name", "v0ModelId", "description", "isDefault", "sortOrder")
+       VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT ("v0ModelId") DO NOTHING`,
-      [m.name, m.v0ModelId, m.description, m.isDefault, m.sortOrder],
+      [crypto.randomUUID(), m.name, m.v0ModelId, m.description, m.isDefault, m.sortOrder],
     );
   }
   console.log(`✅ Добавлены модели v0 по умолчанию: ${MODELS.map((m) => m.v0ModelId).join(', ')}.`);

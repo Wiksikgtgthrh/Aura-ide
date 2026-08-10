@@ -12,6 +12,7 @@ import { Pool } from 'pg';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -135,9 +136,12 @@ async function seedPlugins() {
     await client.query('BEGIN');
 
     for (const plugin of PLUGINS) {
+      // id генерируем явно: в БД от drizzle-kit у колонки id нет SQL DEFAULT
+      // (только $defaultFn на уровне ORM), поэтому сырой INSERT без id падает
+      // с 23502 NOT NULL. crypto.randomUUID() = тот же формат, что drizzle.
       await client.query(
-        `INSERT INTO plugins (slug, name, description, author, version, type, scope, icon, manifest)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `INSERT INTO plugins (id, slug, name, description, author, version, type, scope, icon, manifest)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          ON CONFLICT (slug) DO UPDATE SET
            name = EXCLUDED.name,
            description = EXCLUDED.description,
@@ -149,6 +153,7 @@ async function seedPlugins() {
            manifest = EXCLUDED.manifest,
            "updatedAt" = NOW()`,
         [
+          crypto.randomUUID(),
           plugin.slug,
           plugin.name,
           plugin.description,
