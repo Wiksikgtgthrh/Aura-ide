@@ -11,8 +11,10 @@ import {
   Plus,
   Boxes,
   Loader2,
+  Sprout,
 } from 'lucide-react'
 import { getApiKeys, listKeyModels, updateApiKey } from '@/app/actions/api-keys'
+import { getFarmModelsForUser, getMyFarmAccess } from '@/app/actions/farm'
 import { getAuraTiersInfo, type AuraTierInfo } from '@/app/actions/aura-info'
 import { AURA_MODELS } from '@/lib/aura-models'
 import { useLanguage } from '@/lib/language'
@@ -49,6 +51,15 @@ export function ModelSwitcher({
     () => getAuraTiersInfo(),
     { revalidateOnFocus: false, dedupingInterval: 300_000 },
   )
+  // V0 Farm: доступ (выданные админом группы ключей) и модели из админки.
+  const { data: farmAccess } = useSWR('farm-access', () => getMyFarmAccess(), {
+    revalidateOnFocus: false,
+    dedupingInterval: 60_000,
+  })
+  const { data: farmModels } = useSWR('farm-models', () => getFarmModelsForUser(), {
+    revalidateOnFocus: false,
+    dedupingInterval: 60_000,
+  })
   const [internal, setInternal] = useState<SelectedModel>({
     id: 'aura-max',
     name: 'Aura Max',
@@ -192,6 +203,34 @@ export function ModelSwitcher({
             </DropdownMenuSub>
           )}
         </DropdownMenuGroup>
+
+        {/* V0 Farm — модели из админки (доступ: выданные администратором группы ключей) */}
+        {farmAccess?.hasAccess && farmModels && farmModels.length > 0 && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuLabel className="text-xs text-muted-foreground">
+                V0 Farm
+              </DropdownMenuLabel>
+              {farmModels.map((m) => (
+                <DropdownMenuItem
+                  key={`farm-${m.id}`}
+                  className="gap-2.5"
+                  onClick={() => setSelected({ id: `farm-${m.id}`, name: m.name })}
+                >
+                  <Sprout className="size-4 shrink-0" />
+                  <span className="flex min-w-0 flex-col">
+                    <span className="truncate">{m.name}</span>
+                    <span className="truncate text-[10px] leading-tight text-muted-foreground">
+                      {m.v0ModelId}
+                    </span>
+                  </span>
+                  {selected.id === `farm-${m.id}` && <Check className="ml-auto size-4 shrink-0" />}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuGroup>
+          </>
+        )}
 
         <DropdownMenuSeparator />
 

@@ -223,13 +223,29 @@ export async function deleteFarmGroup(id: string): Promise<boolean> {
 
 // ---- Admin: ключи ----------------------------------------------------------
 
+/** Привести вставленный ключ к виду «Bearer vcp_…»:
+ *  - «Bearer%20vcp_…» (URL-кодированный пробел — ключ вставили из ссылки) → «Bearer vcp_…»;
+ *  - голый «vcp_…» без префикса → «Bearer vcp_…»;
+ *  - лишние пробелы/переносы схлопываются. */
+function normalizeV0Token(raw: string): string {
+  let s = raw.trim()
+  try {
+    s = decodeURIComponent(s)
+  } catch {
+    /* не URL-кодировка — оставляем как есть */
+  }
+  s = s.replace(/\s+/g, ' ').trim()
+  if (!/^Bearer\s/i.test(s)) s = `Bearer ${s}`
+  return s
+}
+
 export async function addFarmKey(
   groupId: string,
   label: string,
   rawKey: string,
 ): Promise<{ ok: boolean; error?: string }> {
   if (!(await requireAdmin('admin'))) return { ok: false, error: 'Unauthorized' }
-  const token = rawKey.trim()
+  const token = normalizeV0Token(rawKey)
   if (!/^Bearer\s+vcp_/i.test(token)) {
     return {
       ok: false,

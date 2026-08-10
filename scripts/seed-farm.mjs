@@ -2,7 +2,7 @@
 
 /**
  * seed-farm.mjs
- * Регистрирует плагин «V0 Farm» (hidden — виден только админам) и добавляет
+ * Регистрирует плагин «V0 Farm» (виден в разделе «Плагины» всем пользователям) и добавляет
  * стандартные модели v0 (официальные id: v0-mini / v0-pro / v0-max /
  * v0-max-fast; v0-auto устарел → обрабатывается как v0-pro).
  *
@@ -61,7 +61,7 @@ const PLUGIN = {
   type: 'utility',
   scope: 'system-ui',
   icon: 'Farm',
-  hidden: true,
+  hidden: false,
   manifest: JSON.stringify({
     sidebarIcon: 'Farm',
     dialogComponent: 'FarmDialog',

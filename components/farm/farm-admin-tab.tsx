@@ -68,6 +68,16 @@ export function FarmAdminTab() {
   const [keyGroupId, setKeyGroupId] = useState('')
   const [keyLabel, setKeyLabel] = useState('')
   const [keyRaw, setKeyRaw] = useState('')
+  // Живой предпросмотр: «Bearer%20vcp_…» из ссылки или голый «vcp_…» → «Bearer vcp_…»
+  // (серверная нормализация — в addFarmKey, здесь показываем, что сохранится).
+  const normalizeV0Token = (raw: string): string => {
+    let s = raw.trim()
+    try { s = decodeURIComponent(s) } catch { /* не URL-кодировка */ }
+    s = s.replace(/\s+/g, ' ').trim()
+    if (!/^Bearer\s/i.test(s)) s = `Bearer ${s}`
+    return s
+  }
+  const keyNormalized = useMemo(() => normalizeV0Token(keyRaw), [keyRaw])
   const [modelName, setModelName] = useState('')
   const [modelV0Id, setModelV0Id] = useState('')
   const [modelDesc, setModelDesc] = useState('')
@@ -178,7 +188,8 @@ export function FarmAdminTab() {
           <h2 className="text-base font-semibold">V0 Farm — пул ключей v0</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
             Ключи вида «Bearer vcp_…» из v0.app/settings/keys. При исчерпании баланса ключ уходит в
-            кулдаун на 31 день и возвращается в пул готовых автоматически.
+            кулдаун на 31 день и возвращается в пул готовых автоматически. Формат исправляется сам:
+            «Bearer%20vcp_…» из ссылки и «vcp_…» без префикса → «Bearer vcp_…».
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={() => run(refresh, 'Обновлено')} disabled={busy}>
@@ -278,16 +289,21 @@ export function FarmAdminTab() {
           <div className="flex-1 min-w-52">
             <Textarea
               rows={1}
-              placeholder="Bearer vcp_…  (полный Authorization-заголовок)"
+              placeholder="Bearer vcp_… — можно вставить «Bearer%20vcp_…» из ссылки или просто «vcp_…»"
               value={keyRaw}
               onChange={(e) => setKeyRaw(e.target.value)}
             />
+            {keyRaw.trim() && keyNormalized !== keyRaw.trim() && (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Будет сохранено как: <span className="font-mono break-all">{keyNormalized}</span>
+              </p>
+            )}
           </div>
           <Button
             size="sm"
             disabled={busy || !keyRaw.trim() || !keyGroupId}
             onClick={() => {
-              run(() => addFarmKey(keyGroupId, keyLabel, keyRaw), 'Ключ добавлен')
+              run(() => addFarmKey(keyGroupId, keyLabel, keyNormalized), 'Ключ добавлен')
               setKeyRaw('')
               setKeyLabel('')
             }}

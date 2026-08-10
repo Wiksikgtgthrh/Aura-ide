@@ -1,5 +1,6 @@
 import {
   convertToModelMessages,
+  createUIMessageStream,
   createUIMessageStreamResponse,
   generateText,
   simulateStreamingMiddleware,
@@ -15,6 +16,7 @@ import { getSession } from '@/lib/session'
 import { apiKeys, chats, preferences, platformApiKeys, userBalance } from '@/lib/db/schema'
 import { tryDecryptSecret, isEncrypted } from '@/lib/crypto'
 import { AURA_MODEL_MAP, AURA_MODELS, pickPlanKeyForTier } from '@/lib/aura-models'
+import { generateWithFarm, getFarmModels, saveFarmFilesToProject } from '@/lib/farm'
 import { getChatAccess } from '@/lib/chat-access'
 import { getModeration } from '@/lib/admin'
 import {
@@ -431,6 +433,12 @@ export async function POST(req: Request) {
     }
   }
 
+  if (modelId?.startsWith('farm-')) {
+    // V0 Farm не тратит встроенные модели — дневной лимит к ней не применяется
+    // (сама генерация обрабатывается ниже, до стрима).
+    bypassDailyLimit = true
+  }
+
   if (!model) {
     // Выбора нет (или выбранный ключ удалён): первый ключ юзера…
     const resolved = await getFirstUserKeyModel()
@@ -783,6 +791,48 @@ or <design-choices> — those already render as chips).`
     .filter((p) => p.type === 'text')
     .map((p) => (p as { text: string }).text)
     .join(' ')
+
+  // ---- V0 Farm: в чате выбрана модель из админки ---------------------------
+  // Генерация через пул v0-ключей (ротация при исчерпании баланса), файлы
+  // пишутся в project_files IDE-чата, ответ возвращается обычным стримом.
+  if (modelId?.startsWith('farm-')) {
+    const farmModelId = modelId.slice(5)
+    try {
+      const farmModel = (await getFarmModels()).find((m) => m.id === farmModelId && m.enabled)
+      if (farmModel) {
+        const farmResult = await generateWithFarm({
+          userId,
+          prompt: latestUserText.slice(0, 8000),
+          chatId: id,
+          modelId: farmModel.v0ModelId,
+        })
+        if (farmResult.ok) {
+          usedModelName = `V0 Farm: ${farmModel.name}`
+          await saveFarmFilesToProject(id, farmResult.files).catch(() => {})
+        }
+        const replyText = farmResult.ok
+          ? farmResult.assistantText
+          : farmResult.errors.join('\n')
+        const stream = createUIMessageStream({
+          execute({ writer }) {
+            writer.write({ type: 'text-start', id: 'farm-text' })
+            if (replyText) writer.write({ type: 'text-delta', id: 'farm-text', delta: replyText })
+            writer.write({ type: 'text-end', id: 'farm-text' })
+          },
+          originalMessages: allMessages,
+          onEnd: ({ messages }) => {
+            void saveChatMessages(id, messages).catch((err) =>
+              console.error('[chat] saveChatMessages failed:', err),
+            )
+          },
+        })
+        return createUIMessageStreamResponse({ stream })
+      }
+    } catch (e) {
+      // Farm недоступен (сеть/БД) — молча падаем в обычный флоу Aura.
+      console.error('[chat] v0 farm generation failed:', e)
+    }
+  }
 
   const designState = deriveDesignState({
     hasProjectFiles: Object.keys(projectFs).length > 0,

@@ -122,6 +122,9 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 try {
   await pool.query(SQL);
   console.log('✅ Таблицы V0 Farm созданы/обновлены (idempotent).');
+  // Плагин «V0 Farm» виден в разделе «Плагины» (раньше — только админам).
+  await pool.query(`UPDATE plugins SET "hidden" = false WHERE "slug" = 'v0-farm'`);
+  console.log('✅ Плагин «V0 Farm» открыт в разделе «Плагины».');
 } finally {
   await pool.end();
 }
