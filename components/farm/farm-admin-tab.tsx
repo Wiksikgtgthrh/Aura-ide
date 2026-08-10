@@ -530,7 +530,7 @@ export function FarmAdminTab() {
                 </div>
               </div>
               )
-            ))}
+            )}
           </div>
         )}
       </section>
