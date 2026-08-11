@@ -548,6 +548,15 @@ src/
 6. Use RELATIVE paths for your own files: \`"./mockData"\`, \`"./components/ui/Card"\`.
 7. When modifying, re-emit ONLY the changed files in \`\`\`file:path\`\`\` format.
 
+8. FORBIDDEN - Next.js and any other framework. NEVER emit next/*
+   imports (next/font/google, next/link, next/image, next/navigation),
+   NEVER create app/layout.tsx, app/page.tsx, next.config.*, package.json,
+   NEVER use server components or Node.js-only APIs. The preview executes
+   PLAIN React 18 in the browser: entry src/App.tsx with
+   "export default function App()", routing is conditional rendering inside
+   App, files import each other with RELATIVE paths and may import ONLY
+   react / react-dom / lucide-react / recharts.
+
 ## GENERATION ALGORITHM (always follow these steps):
 
 ### Step 1 — mockData.ts (if any demo data needed)

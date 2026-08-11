@@ -134,6 +134,7 @@ export function buildPreviewBootstrapHtml(): string {
     post({ type: 'console', level: 'error', text: text });
   }
   function clearError() { overlay.style.display = 'none'; }
+  var NEXTJS_HINT = 'Похоже на Next.js-проект: папка app/, импорты next/*. Превью Aura выполняет только чистый React 18: точка входа src/App.tsx, импорты только react/react-dom/lucide-react/recharts, пути относительные. Нажмите «Исправить с ИИ», чтобы переписать проект.';
 
   window.addEventListener('error', function (e) {
     showError((e.error && e.error.stack) || e.message || 'Unknown error');
@@ -250,7 +251,8 @@ export function buildPreviewBootstrapHtml(): string {
     if (!resolved) {
       // Unknown bare import → helpful error instead of a white screen
       throw new Error('Cannot resolve module "' + spec + '" (imported from ' + fromPath + ').\\n' +
-        'Available libs: react, react-dom, lucide-react, recharts. Project files must use relative paths.');
+        'Available libs: react, react-dom, lucide-react, recharts. Project files must use relative paths.' +
+        ' (Hint: the preview runs plain React 18 only - if this is a Next.js project, rewrite it with a src/App.tsx entry and no next/* imports.)');
     }
     if (moduleCache[resolved]) {
       if (moduleCache[resolved].__loading) {
@@ -325,11 +327,20 @@ export function buildPreviewBootstrapHtml(): string {
   }
   var ErrorBoundary = ErrorBoundaryFactory();
 
+  function looksLikeNextProject() {
+    for (var p in files) {
+      if (p.indexOf('app/') === 0 || p === 'next.config.js' || p === 'next.config.mjs' || p === 'next.config.ts') return true;
+    }
+    return false;
+  }
+
   function findEntry() {
     var candidates = ['src/App.tsx', 'src/App.ts', 'src/App.jsx', 'src/App.js', 'App.tsx', 'src/app.tsx'];
     for (var i = 0; i < candidates.length; i++) {
       if (Object.prototype.hasOwnProperty.call(files, candidates[i])) return candidates[i];
     }
+    // Next.js files under app/ cannot render standalone in the browser preview
+    for (var p in files) if (/\\.(tsx|jsx)$/.test(p) && p.indexOf('app/') !== 0) return p;
     for (var p in files) if (/\\.(tsx|jsx)$/.test(p)) return p;
     return null;
   }
@@ -337,7 +348,14 @@ export function buildPreviewBootstrapHtml(): string {
   function render() {
     renderScheduled = false;
     var entry = findEntry();
-    if (!entry) return;
+    if (!entry) {
+      if (looksLikeNextProject()) showError(NEXTJS_HINT);
+      return;
+    }
+    if (entry.indexOf('app/') === 0) {
+      showError(NEXTJS_HINT);
+      return;
+    }
     injectCss();
     moduleCache = {};
     try {
