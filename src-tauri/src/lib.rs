@@ -20,9 +20,15 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+use tauri::{AppHandle, Emitter, RunEvent, State};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command as TokioCommand;
+
+// Windows-specific extensions for CREATE_NO_WINDOW / creation_flags().
+#[cfg(windows)]
+use std::os::windows::process::CommandExt as StdCommandExt;
+#[cfg(windows)]
+use tokio::process::CommandExt as TokioCommandExt;
 
 // ---------------------------------------------------------------------------
 // Общие типы
