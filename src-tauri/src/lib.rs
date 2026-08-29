@@ -24,11 +24,10 @@ use tauri::{AppHandle, Emitter, RunEvent, State};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command as TokioCommand;
 
-// Windows-specific extensions for CREATE_NO_WINDOW / creation_flags().
+// Windows-specific extension for CREATE_NO_WINDOW / creation_flags().
+// Both std::process::Command and tokio::process::Command use this trait on Windows.
 #[cfg(windows)]
-use std::os::windows::process::CommandExt as StdCommandExt;
-#[cfg(windows)]
-use tokio::process::CommandExt as TokioCommandExt;
+use std::os::windows::process::CommandExt;
 
 // ---------------------------------------------------------------------------
 // Общие типы
@@ -514,7 +513,7 @@ async fn api_key_probe(input: KeyProbeInput) -> CmdResult<KeyProbeResult> {
         .await;
 
     let ttft_ms: Option<u64> = match stream_res {
-        Ok(mut r) if r.status().is_success() => {
+        Ok(r) if r.status().is_success() => {
             use futures_util::StreamExt;
             let mut s = r.bytes_stream();
             let mut ttft = None;
