@@ -4,7 +4,7 @@
   "private": true,
   "description": "Aura IDE — оптимизированная desktop AI-среда разработки (Tauri)",
   "scripts": {
-    "dev": "cross-env NODE_OPTIONS=--max-old-space-size=4096 next dev",
+    "dev": "cross-env NODE_OPTIONS=--max-old-space-size=4096 next dev --webpack",
     "build": "cross-env NODE_OPTIONS=--max-old-space-size=4096 next build",
     "start": "next start",
     "tauri": "tauri",
