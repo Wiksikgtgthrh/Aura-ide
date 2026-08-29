@@ -62,6 +62,9 @@ async function runMigrations() {
   const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
   });
+  // Neon рвёт соединение при завершении — без обработчика процесс падает
+  // уже после успешных миграций. Глотаем (реальные ошибки — в try/catch).
+  pool.on('error', () => {});
 
   try {
     const db = drizzle(pool);
@@ -79,7 +82,11 @@ async function runMigrations() {
     console.error('❌ Ошибка при выполнении миграций:', error.message);
     process.exit(1);
   } finally {
-    await pool.end();
+    try {
+      await pool.end();
+    } catch {
+      /* соединение уже закрыто — миграции применены */
+    }
   }
 }
 

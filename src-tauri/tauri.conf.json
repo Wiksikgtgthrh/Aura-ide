@@ -39,18 +39,7 @@
     ],
     "windows": {
       "nsis": {
-        "installMode": "currentUser",
-        "createDesktopShortcut": true,
-        "createStartMenuShortcut": true
-      },
-      "shortcutName": "Aura IDE"
-    },
-    "macOS": {
-      "createDesktopShortcut": true
-    },
-    "linux": {
-      "deb": {
-        "desktopTemplate": null
+        "installMode": "currentUser"
       }
     },
     "createUpdaterArtifacts": false

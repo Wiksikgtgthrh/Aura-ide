@@ -6,14 +6,25 @@ import * as schema from './schema'
 import fs from 'fs'
 import path from 'path'
 
+function readEnvFile(filePath: string, key: string): string | null {
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8')
+    const match = content.match(new RegExp(`^${key}=['"]?([^'"\n]+)['"]?`, 'm'))
+    return match?.[1]?.trim() || null
+  } catch {
+    return null
+  }
+}
+
 function getDatabaseUrl(): string {
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL
-  try {
-    const configPath = path.join(process.cwd(), 'config.txt')
-    const content = fs.readFileSync(configPath, 'utf-8')
-    const match = content.match(/DATABASE_URL=['"]?([^'"\n]+)['"]?/)
-    if (match?.[1]) return match[1]
-  } catch {}
+  // `next build` / `next start` работают в production-режиме и НЕ читают
+  // .env.development.local (он только для dev). Для локального/desktop-запуска
+  // подхватываем его вручную — иначе сборка падает с "DATABASE_URL is not set".
+  for (const name of ['.env.production.local', '.env.development.local', '.env.local', '.env', 'config.txt']) {
+    const value = readEnvFile(path.join(process.cwd(), name), 'DATABASE_URL')
+    if (value) return value
+  }
   throw new Error('DATABASE_URL is not set')
 }
 
