@@ -8,6 +8,7 @@ import dynamic from 'next/dynamic'
 import { PromptBox, type PromptBoxSubmitPayload } from '@/components/prompt-box'
 import { createChat } from '@/app/actions/chats'
 import { useLanguage } from '@/lib/language'
+import { OpenFolderButton, LocalWorkspace } from '@/components/local-workspace'
 
 // Loaded only on the client to avoid hydration mismatch caused by
 // SWR + language context differing between SSR and first client render.
@@ -21,6 +22,9 @@ export function HomeContent() {
   const router = useRouter()
   const pathname = usePathname()
   const [creating, setCreating] = useState(false)
+  // Открытая локальная папка (desktop «Open Folder» как в VS Code).
+  // null — обычная главная с промптом; path — workspace поверх неё.
+  const [folder, setFolder] = useState<string | null>(null)
 
   // HomeContent is mounted permanently inside an <Activity> shell, so it is
   // NEVER unmounted when navigating away to a chat. That means `creating`
@@ -84,6 +88,15 @@ export function HomeContent() {
     startChat(text, 'aura-max')
   }
 
+  // Открыта локальная папка — показываем workspace вместо промпта.
+  if (folder) {
+    return (
+      <main className="flex min-h-0 flex-1 flex-col animate-in fade-in duration-150">
+        <LocalWorkspace root={folder} onClose={() => setFolder(null)} />
+      </main>
+    )
+  }
+
   return (
     <main className="flex flex-1 flex-col items-center justify-center px-6 animate-in fade-in duration-150">
       <h1 className="mb-8 text-balance text-3xl font-bold tracking-tight text-foreground md:text-4xl">
@@ -91,6 +104,9 @@ export function HomeContent() {
       </h1>
       <PromptBox onSubmit={handleSubmit} busy={creating} />
       <SuggestionChips onSelect={handleSuggestion} disabled={creating} />
+      <div className="mt-6">
+        <OpenFolderButton onOpen={setFolder} />
+      </div>
     </main>
   )
 }

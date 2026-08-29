@@ -285,6 +285,85 @@ fn fs_write(path: String, content: String) -> CmdResult<()> {
     Ok(())
 }
 
+#[tauri::command]
+fn fs_create_file(path: String) -> CmdResult<()> {
+    if let Some(parent) = Path::new(&path).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if !Path::new(&path).exists() {
+        std::fs::write(&path, "")?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn fs_create_dir(path: String) -> CmdResult<()> {
+    std::fs::create_dir_all(path)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn fs_delete(path: String) -> CmdResult<()> {
+    let p = Path::new(&path);
+    if p.is_dir() {
+        std::fs::remove_dir_all(p)?;
+    } else if p.exists() {
+        std::fs::remove_file(p)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn fs_rename(from: String, to: String) -> CmdResult<()> {
+    if let Some(parent) = Path::new(&to).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::rename(from, to)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Git
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct GitStatusEntry {
+    status: String,
+    path: String,
+}
+
+/// `git status --porcelain` для бейджей в проводнике. Папка не является
+/// git-репозиторием (или git не установлен) → пустой список, это не ошибка.
+#[tauri::command]
+fn git_status(cwd: String) -> CmdResult<Vec<GitStatusEntry>> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["-C", &cwd, "status", "--porcelain=v1"]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(_) => return Ok(Vec::new()),
+    };
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(text
+        .lines()
+        .filter_map(|line| {
+            if line.len() < 4 {
+                return None;
+            }
+            let status = line[..2].trim().to_string();
+            let path = line[3..].trim().trim_matches('"').to_string();
+            if path.is_empty() {
+                return None;
+            }
+            Some(GitStatusEntry { status, path })
+        })
+        .collect())
+}
+
 // ---------------------------------------------------------------------------
 // Live-превью (dev-сервер проекта)
 // ---------------------------------------------------------------------------
@@ -656,6 +735,11 @@ pub fn run() {
             fs_tree,
             fs_read,
             fs_write,
+            fs_create_file,
+            fs_create_dir,
+            fs_delete,
+            fs_rename,
+            git_status,
             preview_start,
             preview_stop,
             api_key_probe,

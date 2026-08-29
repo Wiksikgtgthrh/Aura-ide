@@ -77,6 +77,40 @@ export async function fsRead(path: string) {
 export async function fsWrite(path: string, content: string) {
   return invoke<void>('fs_write', { path, content })
 }
+export async function fsCreateFile(path: string) {
+  return invoke<void>('fs_create_file', { path })
+}
+export async function fsCreateDir(path: string) {
+  return invoke<void>('fs_create_dir', { path })
+}
+export async function fsDelete(path: string) {
+  return invoke<void>('fs_delete', { path })
+}
+export async function fsRename(from: string, to: string) {
+  return invoke<void>('fs_rename', { from, to })
+}
+
+// --- Git -------------------------------------------------------------------
+
+export type GitStatusEntry = { status: string; path: string }
+
+export async function gitStatus(cwd: string) {
+  return invoke<GitStatusEntry[]>('git_status', { cwd })
+}
+
+// --- Диалог выбора папки ---------------------------------------------------
+
+/** Нативный диалог «Открыть папку». В браузере → null (недоступно). */
+export async function pickFolder(): Promise<string | null> {
+  if (!isDesktop()) return null
+  try {
+    const dialog = await import('@tauri-apps/plugin-dialog')
+    const selected = await dialog.open({ directory: true, multiple: false })
+    return typeof selected === 'string' ? selected : null
+  } catch {
+    return null
+  }
+}
 
 // --- Live-превью ------------------------------------------------------------
 
