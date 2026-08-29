@@ -11,6 +11,8 @@ import { getTeamsForUser } from '@/app/actions/teams'
 import { listChatsForUser } from '@/lib/chat-store'
 import { getSession } from '@/lib/session'
 import { getActor, getModeration } from '@/lib/admin'
+import { isLocalMode } from '@/lib/desktop-auth'
+import { DesktopAutostart } from '@/components/desktop-autostart'
 import { NavigationProvider } from '@/lib/navigation-context'
 import { SettingsProvider } from '@/components/settings-context'
 import { AppContentArea, type PreloadedSettingsData, type PreloadedPagesData } from '@/components/app-content-area'
@@ -24,7 +26,9 @@ async function AppShellLoader({
   // and the DB round-trip never block the streamed shell (and cacheComponents
   // prerender doesn't flag uncached IO outside Suspense).
   const session = await getSession()
-  if (!session?.user) redirect('/sign-in')
+  // Без регистрации: в локальном режиме вместо экрана входа — авто-логин
+  // под локальным админом, IDE открывается сразу.
+  if (!session?.user) redirect(isLocalMode() ? '/api/local-login' : '/sign-in')
 
   const userId = session.user.id
 
@@ -86,6 +90,10 @@ async function AppShellLoader({
 
   return (
     <>
+      {/* Автозапуск интернет-зависимых компонентов при заходе в IDE:
+          фоновая проверка всех API-ключей (скорость/доступность),
+          мёртвые и медленные отключаются автоматически. */}
+      <DesktopAutostart />
       <AppSidebar
         userId={userId}
         userName={displayName}

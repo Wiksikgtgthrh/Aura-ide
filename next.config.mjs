@@ -16,15 +16,17 @@ const projectRoot = path.dirname(fileURLToPath(import.meta.url))
 // The high-value protections here are frame-ancestors (anti-clickjacking on
 // the whole app) and locking down base-uri / form-action / object-src.
 const CDN = 'https://unpkg.com https://cdn.jsdelivr.net https://cdn.tailwindcss.com'
+// Desktop (Tauri): вебвью обращается к нативному ядру через ipc:// протокол.
+const IPC = 'ipc: http://ipc.localhost tauri:'
 const csp = [
-  "default-src 'self'",
+  `default-src 'self' ${IPC}`,
   `script-src 'self' 'unsafe-inline' 'unsafe-eval' ${CDN}`,
   "style-src 'self' 'unsafe-inline' https:",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data: https:",
   // http://localhost:* + ws: — the Live-preview dev server (Vite/Next) runs on
-  // a localhost port and uses a WebSocket for HMR.
-  "connect-src 'self' https: http://localhost:* ws://localhost:*",
+  // a localhost port and uses a WebSocket for HMR. ipc: — нативное ядро Tauri.
+  `connect-src 'self' https: http://localhost:* ws://localhost:* ${IPC}`,
   "frame-src 'self' blob: http://localhost:*",
   "worker-src 'self' blob:",
   "object-src 'none'",

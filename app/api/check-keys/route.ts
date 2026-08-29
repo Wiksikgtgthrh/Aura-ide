@@ -5,6 +5,69 @@ import { decryptSecret, isEncrypted } from '@/lib/crypto'
 import { eq } from 'drizzle-orm'
 import { getSession } from '@/lib/session'
 
+// Мёртвые и медленные API автоматически не используются: всё, что не
+// 'active' (error/timeout/slow), чат пропускает при выборе ключа.
+
+/**
+ * GET /api/check-keys — список ключей пользователя для НАТИВНОЙ пробы.
+ * Desktop-режим: ключи уходят в Rust-ядро (lib/tauri apiKeyProbe), которое
+ * меряет пинг и скорость (TTFT стрима) без CORS-ограничений браузера.
+ */
+export async function GET() {
+  const session = await getSession()
+  if (!session?.user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+  const rows = await db
+    .select({ id: apiKeys.id, key: apiKeys.key, baseUrl: apiKeys.baseUrl, modelId: apiKeys.modelId })
+    .from(apiKeys)
+    .where(eq(apiKeys.userId, session.user.id))
+  return NextResponse.json({
+    keys: rows.map((r) => ({
+      id: r.id,
+      key: isEncrypted(r.key) ? decryptSecret(r.key) : r.key,
+      baseUrl: r.baseUrl,
+      modelId: r.modelId,
+    })),
+  })
+}
+
+/**
+ * PATCH /api/check-keys — сохранить результаты нативной (desktop) пробы.
+ * Статус 'slow' трактуем как непригодный: ключ помечается 'error' с
+ * пояснением, чтобы чат его не брал, но пользователь видел причину.
+ */
+export async function PATCH(req: Request) {
+  const session = await getSession()
+  if (!session?.user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+  const body = (await req.json().catch(() => ({}))) as {
+    results?: Array<{
+      id: number
+      status: 'active' | 'slow' | 'error' | 'timeout'
+      pingMs: number | null
+      ttftMs: number | null
+      failReason: string | null
+    }>
+  }
+  const results = Array.isArray(body.results) ? body.results : []
+  await Promise.all(
+    results.map((r) =>
+      db
+        .update(apiKeys)
+        .set({
+          status: r.status === 'slow' ? 'error' : r.status,
+          ping: r.pingMs ?? r.ttftMs,
+          failReason: r.failReason,
+          lastCheckedAt: new Date(),
+        })
+        .where(eq(apiKeys.id, r.id)),
+    ),
+  )
+  return NextResponse.json({ ok: true, updated: results.length })
+}
+
 const PING_TIMEOUT_MS = 1500
 const HIGH_PING_THRESHOLD_MS = 1000
 const STREAM_PROBE_TIMEOUT_MS = 4000

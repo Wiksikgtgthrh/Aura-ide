@@ -7,6 +7,7 @@ import { Activity } from 'react'
 import { useNavigation } from '@/lib/navigation-context'
 import useSWR from 'swr'
 import { authClient } from '@/lib/auth-client'
+import { isDesktop } from '@/lib/tauri'
 import {
   getChats,
   renameChat,
@@ -839,15 +840,21 @@ export function AppSidebar({
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
             </DropdownMenuGroup>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              onClick={handleSignOut}
-              disabled={signingOut}
-              className="gap-2.5"
-            >
-              <LogOut className="size-4" />
-              {signingOut ? t('signingOut') : t('signOut')}
-            </DropdownMenuItem>
+            {/* Локальный режим (desktop, без регистрации): входа нет —
+                и кнопку выхода не показываем, сразу работаем под админом. */}
+            {!isDesktop() && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={handleSignOut}
+                  disabled={signingOut}
+                  className="gap-2.5"
+                >
+                  <LogOut className="size-4" />
+                  {signingOut ? t('signingOut') : t('signOut')}
+                </DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
         <span className="px-2.5 py-1 rounded-md border border-border bg-background text-xs text-foreground shrink-0">

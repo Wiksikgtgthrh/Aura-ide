@@ -36,7 +36,7 @@ import { extractMemoriesFromExchange } from '@/lib/memory-extract'
 import { getActivePluginContext } from '@/app/actions/plugins'
 import { getActiveMcpServers } from '@/app/actions/mcp'
 import { getActiveMemoriesForPrompt } from '@/app/actions/memories'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, ne, sql } from 'drizzle-orm'
 
 // Длинные генерации (много файлов через медленный прокси) не должны
 // обрубаться на минуте: 300s — потолок Fluid Compute; на Hobby Vercel
@@ -290,8 +290,11 @@ export async function POST(req: Request) {
         modelId: apiKeys.modelId,
       })
       .from(apiKeys)
-      .where(eq(apiKeys.userId, userId))
-      .orderBy(apiKeys.createdAt)
+      // Авто-отключение: мёртвые и медленные ключи (error/timeout, в т.ч.
+      // помеченные автопроверкой при старте) чат не берёт. 'active' в
+      // приоритете, 'unknown' (ещё не проверенные) — резерв.
+      .where(and(eq(apiKeys.userId, userId), ne(apiKeys.status, 'error'), ne(apiKeys.status, 'timeout')))
+      .orderBy(sql`case when ${apiKeys.status} = 'active' then 0 when ${apiKeys.status} = 'unknown' then 1 else 2 end`, apiKeys.createdAt)
       .limit(1)
     if (!row) return null
     if (row.baseUrl && !(await isSafeFetchUrl(row.baseUrl))) return null
