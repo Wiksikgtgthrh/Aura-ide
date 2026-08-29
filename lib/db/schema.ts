@@ -175,6 +175,21 @@ export const apiKeys = pgTable('api_keys', {
   createdAt: timestamp('createdAt').notNull().defaultNow(),
 })
 
+// История проверок здоровья API-ключей (периодическая фоновая проверка):
+// пинг и скорость ответа (TTFT) по времени — для графика и авто-выбора
+// самой быстрой модели. Записи добавляет /api/check-keys.
+export const apiKeyHealth = pgTable('api_key_health', {
+  id: serial('id').primaryKey(),
+  apiKeyId: integer('apiKeyId').notNull(),
+  // 'active' | 'error' | 'timeout'
+  status: text('status').notNull().default('unknown'),
+  ping: integer('ping'),
+  // Время до первого токена стрима (desktop-проба), null — не измерялось
+  ttft: integer('ttft'),
+  failReason: text('failReason'),
+  checkedAt: timestamp('checkedAt').notNull().defaultNow(),
+})
+
 export const tokenUsage = pgTable('token_usage', {
   id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
   userId: text('userId').notNull().references(() => user.id, { onDelete: 'cascade' }),

@@ -4,6 +4,7 @@ import { apiKeys } from '@/lib/db/schema'
 import { decryptSecret, isEncrypted } from '@/lib/crypto'
 import { eq } from 'drizzle-orm'
 import { getSession } from '@/lib/session'
+import { recordKeyHealth } from '@/lib/api-key-health'
 
 // Мёртвые и медленные API автоматически не используются: всё, что не
 // 'active' (error/timeout/slow), чат пропускает при выборе ключа.
@@ -65,6 +66,19 @@ export async function PATCH(req: Request) {
         .where(eq(apiKeys.id, r.id)),
     ),
   )
+  // История здоровья (в т.ч. TTFT из нативной пробы) + авто-реанимация:
+  // статус 'active' выше уже сам перезаписал 'error'/'timeout' — ключ,
+  // который восстановился, автоматически возвращается в работу.
+  void Promise.all(
+    results.map((r) =>
+      recordKeyHealth(r.id, {
+        status: r.status === 'slow' ? 'error' : r.status,
+        ping: r.pingMs ?? r.ttftMs,
+        ttft: r.ttftMs,
+        failReason: r.failReason,
+      }),
+    ),
+  ).catch(() => {})
   return NextResponse.json({ ok: true, updated: results.length })
 }
 
@@ -227,6 +241,14 @@ export async function POST(req: Request) {
         .where(eq(apiKeys.id, res.id)),
     ),
   )
+
+  // История здоровья: статус 'active' здесь — это и авто-реанимация
+  // (прежде мёртвый ключ снова отвечает → возвращается в ротацию чата).
+  void Promise.all(
+    results.map((res) =>
+      recordKeyHealth(res.id, { status: res.status, ping: res.ping, failReason: res.failReason }),
+    ),
+  ).catch(() => {})
 
   return NextResponse.json({ results })
 }

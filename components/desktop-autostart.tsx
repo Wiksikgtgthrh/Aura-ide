@@ -1,28 +1,36 @@
 'use client'
 
 /**
- * Автозапуск «интернет-зависимых» компонентов при открытии IDE.
+ * Автозапуск и фоновое здоровье «интернет-зависимых» компонентов IDE.
  *
- * При заходе в приложение автоматически проверяет все сохранённые
- * API-ключи: пингует их, меряет скорость (время до первого токена стрима)
- * и помечает мёртвые / слишком медленные ключи как неактивные, чтобы чат
- * не спотыкался о них. В desktop-режиме проба идёт через нативное
- * Rust-ядро (быстрее и точнее), в вебе — через серверный /api/check-keys.
+ * 1. При заходе в приложение сразу проверяет все API-ключи.
+ * 2. Дальше проверяет их ПЕРИОДИЧЕСКИ (каждые RECHECK_INTERVAL_MS) в фоне:
+ *    мёртвые и медленные отключаются автоматически, восстановившиеся —
+ *    автоматически возвращаются (авто-реанимация на стороне /api/check-keys).
+ * 3. Каждая проверка пишет точку в историю здоровья (пинг/TTFT по времени).
  *
- * Никакого UI — работает в фоне, один раз за сессию.
+ * Desktop-режим: проба через нативное Rust-ядро (apiKeyProbe, меряет TTFT
+ * стрима без CORS). Веб: серверный /api/check-keys сам прогоняет проверку.
+ *
+ * Никакого UI — работает в фоне. При закрытии/уходе со страницы таймер
+ * останавливается.
  */
 
 import { useEffect, useRef } from 'react'
 import { isDesktop, apiKeyProbe } from '@/lib/tauri'
 
+/** Период фоновой проверки всех ключей (5 минут). */
+const RECHECK_INTERVAL_MS = 5 * 60 * 1000
+
 export function DesktopAutostart() {
-  const ran = useRef(false)
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
+  const running = useRef(false)
 
   useEffect(() => {
-    if (ran.current) return
-    ran.current = true
-
-    const run = async () => {
+    const checkOnce = async () => {
+      // Не запускаем новую проверку, пока идёт предыдущая.
+      if (running.current) return
+      running.current = true
       try {
         if (isDesktop()) {
           // Нативная проба: берём ключи и гоняем проверку через Rust.
@@ -45,17 +53,28 @@ export function DesktopAutostart() {
             }).catch(() => {})
           }
         } else {
-          // Веб: сервер сам прогонит проверку и сохранит статусы.
+          // Веб: сервер сам прогонит проверку, сохранит статусы и историю.
           await fetch('/api/check-keys', { method: 'POST' }).catch(() => {})
         }
       } catch {
-        /* автозапуск не должен ломать открытие IDE */
+        /* фоновая проверка не должна ломать IDE */
+      } finally {
+        running.current = false
       }
     }
 
-    // Небольшая задержка, чтобы не конкурировать с первым рендером.
-    const t = setTimeout(run, 1200)
-    return () => clearTimeout(t)
+    // Первый прогон — сразу после первого рендера (небольшая задержка,
+    // чтобы не конкурировать с загрузкой оболочки).
+    const first = setTimeout(() => {
+      void checkOnce()
+      // Периодическая проверка здоровья ключей.
+      timer.current = setInterval(() => void checkOnce(), RECHECK_INTERVAL_MS)
+    }, 1200)
+
+    return () => {
+      clearTimeout(first)
+      if (timer.current) clearInterval(timer.current)
+    }
   }, [])
 
   return null
