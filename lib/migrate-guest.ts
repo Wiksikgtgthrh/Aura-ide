@@ -10,8 +10,8 @@ import { db } from '@/lib/db'
  * cascade through chats → messages/project_files and silently destroy the
  * guest's projects, own API keys, memories and settings.
  *
- * Raw SQL keeps the statements identical across both drizzle drivers
- * (neon-http and node-postgres). Each statement is defensive:
+ * Raw SQL keeps the statements identical across drizzle drivers.
+ * Each statement is defensive:
  * unique-constrained rows are moved only when the target has no conflict.
  */
 export async function migrateGuestData(

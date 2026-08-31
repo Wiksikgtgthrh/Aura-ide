@@ -20,3 +20,5 @@ onlyBuiltDependencies:
   - esbuild
   - msw
   - sharp
+
+autoInstallPeers: false

@@ -26,9 +26,9 @@ touch .env.development.local
 **Пример содержимого** (замените на ваши реальные значения):
 
 ```env
-# Обязательно! Строка подключения к вашей PostgreSQL БД
-# Получите это значение у администратора БД или из вашего хостинга (например, Neon, AWS, etc.)
-DATABASE_URL="postgresql://neondb_owner:YOUR_PASSWORD@db.neon.tech:5432/neondb?sslmode=require"
+# Обязательно! Строка подключения к ЛОКАЛЬНОЙ PostgreSQL
+# Поднять БД: docker compose up -d  (Postgres на localhost:5432, юзер aura / пароль aura / база aura_ide)
+DATABASE_URL="postgresql://aura:aura@localhost:5432/aura_ide"
 
 # Обязательно! API ключ OpenAI для AI функций
 # Получите на https://platform.openai.com/api-keys

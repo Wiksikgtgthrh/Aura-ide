@@ -1,6 +1,4 @@
-import { neon } from '@neondatabase/serverless'
-import { drizzle as drizzleNeonHttp, type NeonHttpDatabase } from 'drizzle-orm/neon-http'
-import { drizzle as drizzleNodePg } from 'drizzle-orm/node-postgres'
+import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { Pool } from 'pg'
 import * as schema from './schema'
 import fs from 'fs'
@@ -19,17 +17,8 @@ function getDatabaseUrl(): string {
 
 const url = getDatabaseUrl()
 
-// pg Pool — used by better-auth and (on non-Neon databases) by drizzle too
+// Единый локальный pg Pool — и для better-auth, и для drizzle.
+// Neon больше не используется: просто PostgreSQL (local / docker-compose / VPS).
 export const pool = new Pool({ connectionString: url })
 
-/**
- * The neon-http driver only speaks to Neon's HTTP proxy. When the app is
- * deployed against a regular PostgreSQL (own server / VPS / docker-compose),
- * fall back to the node-postgres driver automatically — same query-builder
- * API, so call sites don't change.
- */
-const isNeon = /\bneon\.tech\b/i.test(url)
-
-export const db = (isNeon
-  ? drizzleNeonHttp(neon(url), { schema })
-  : drizzleNodePg(pool, { schema })) as unknown as NeonHttpDatabase<typeof schema>
+export const db = drizzle(pool, { schema }) as NodePgDatabase<typeof schema>

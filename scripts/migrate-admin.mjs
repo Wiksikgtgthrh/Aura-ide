@@ -3,11 +3,11 @@
  * Adds user.role and the platform tables. Safe to run repeatedly.
  * Run: pnpm migrate:admin   (or: node scripts/migrate-admin.mjs)
  */
-import { neon } from '@neondatabase/serverless'
+import { Pool } from 'pg'
 import fs from 'fs'
 import path from 'path'
 
-// drizzle-kit/neon don't auto-load .env — load it the same way the app does.
+// Скрипты не подгружают .env автоматически — читаем сами (как приложение).
 function loadEnv() {
   const root = process.cwd()
   const files = [
@@ -41,7 +41,13 @@ if (!process.env.DATABASE_URL) {
   process.exit(1)
 }
 
-const sql = neon(process.env.DATABASE_URL)
+const pool = new Pool({ connectionString: process.env.DATABASE_URL })
+
+// Тот же контракт, что у neon: sql`...` → массив строк результата.
+const sql = async (strings, ...values) => {
+  const text = strings.reduce((acc, s, i) => acc + s + (values[i] ?? ''), '')
+  return (await pool.query(text)).rows
+}
 
 async function main() {
   console.log('Running migrate-admin…')
@@ -151,7 +157,9 @@ async function main() {
   console.log('Done. Admin schema is ready.')
 }
 
-main().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
+main()
+  .then(() => pool.end())
+  .catch((err) => {
+    console.error(err)
+    process.exit(1)
+  })

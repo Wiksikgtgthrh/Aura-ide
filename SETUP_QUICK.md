@@ -17,7 +17,7 @@ pnpm install && pnpm setup && pnpm dev
 
 | Переменная | Где получить |
 |---|---|
-| `DATABASE_URL` | Копируйте строку подключения из вашей БД (Neon, AWS, etc.) |
+| `DATABASE_URL` | Локальный Postgres: `docker compose up -d`, затем `postgresql://aura:aura@localhost:5432/aura_ide` |
 | `OPENAI_API_KEY` | https://platform.openai.com/api-keys (начинается с `sk-`) |
 | `BETTER_AUTH_SECRET` | Запустите: `openssl rand -base64 32` |
 

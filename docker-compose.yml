@@ -1,0 +1,25 @@
+# Локальная PostgreSQL для Aura IDE (без Neon).
+# Запуск:      docker compose up -d
+# Остановка:   docker compose down
+# Полный сброс (удаление данных): docker compose down -v
+services:
+  db:
+    image: postgres:16
+    container_name: aura-ide-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aura
+      POSTGRES_PASSWORD: aura
+      POSTGRES_DB: aura_ide
+    ports:
+      - "5432:5432"
+    volumes:
+      - aura-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aura -d aura_ide"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  aura-db-data:
