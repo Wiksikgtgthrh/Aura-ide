@@ -1,3 +1,6 @@
+-- token_usage создаётся ЗДЕСЬ ЖЕ (раньше — только в scripts/migrate-apikeys-usage.mjs),
+-- иначе pnpm setup на чистой БД падает: relation "token_usage" does not exist
+
 -- Hot foreign-key / filter indexes (created concurrently is not possible in a
 -- single migration txn here; these are cheap on an empty/small DB and IF NOT
 -- EXISTS keeps re-runs safe).
