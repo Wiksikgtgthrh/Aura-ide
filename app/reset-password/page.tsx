@@ -1,10 +1,11 @@
 'use client'
 
-import { Suspense, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { ArrowLeft, Check, Eye, EyeOff, Loader2 } from 'lucide-react'
 import { authClient } from '@/lib/auth-client'
+import { isDesktop } from '@/lib/tauri'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -13,6 +14,10 @@ import { useLanguage } from '@/lib/language'
 function ResetPasswordForm() {
   const { t } = useLanguage()
   const router = useRouter()
+  // Desktop (без регистрации): сброс пароля не нужен — сразу в IDE.
+  useEffect(() => {
+    if (isDesktop()) router.replace('/')
+  }, [router])
   const searchParams = useSearchParams()
   // better-auth appends ?token=… to the redirectTo URL from the email link
   const token = searchParams.get('token')

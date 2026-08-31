@@ -62,6 +62,12 @@ async function initDatabase() {
     connectionString: process.env.DATABASE_URL,
   });
 
+  // Neon (и другие managed Postgres) агрессивно закрывают соединения при
+  // завершении — без обработчика 'error' это роняет весь процесс уже ПОСЛЕ
+  // успешных миграций ("Connection terminated unexpectedly"). Глотаем:
+  // реальные ошибки запросов обрабатываются в try/catch ниже.
+  pool.on('error', () => {});
+
   try {
     const client = await pool.connect();
     
@@ -118,7 +124,11 @@ async function initDatabase() {
     
     process.exit(1);
   } finally {
-    await pool.end();
+    try {
+      await pool.end();
+    } catch {
+      /* Neon рвёт соединение при закрытии — миграции уже применены */
+    }
   }
 }
 

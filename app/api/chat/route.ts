@@ -36,7 +36,7 @@ import { extractMemoriesFromExchange } from '@/lib/memory-extract'
 import { getActivePluginContext } from '@/app/actions/plugins'
 import { getActiveMcpServers } from '@/app/actions/mcp'
 import { getActiveMemoriesForPrompt } from '@/app/actions/memories'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, ne, sql } from 'drizzle-orm'
 
 // Длинные генерации (много файлов через медленный прокси) не должны
 // обрубаться на минуте: 300s — потолок Fluid Compute; на Hobby Vercel
@@ -290,8 +290,11 @@ export async function POST(req: Request) {
         modelId: apiKeys.modelId,
       })
       .from(apiKeys)
-      .where(eq(apiKeys.userId, userId))
-      .orderBy(apiKeys.createdAt)
+      // Авто-отключение: мёртвые и медленные ключи (error/timeout, в т.ч.
+      // помеченные автопроверкой при старте) чат не берёт. 'active' в
+      // приоритете, 'unknown' (ещё не проверенные) — резерв.
+      .where(and(eq(apiKeys.userId, userId), ne(apiKeys.status, 'error'), ne(apiKeys.status, 'timeout')))
+      .orderBy(sql`case when ${apiKeys.status} = 'active' then 0 when ${apiKeys.status} = 'unknown' then 1 else 2 end`, apiKeys.createdAt)
       .limit(1)
     if (!row) return null
     if (row.baseUrl && !(await isSafeFetchUrl(row.baseUrl))) return null
@@ -976,9 +979,36 @@ or <design-choices> — those already render as chips).`
       const reader = primary.stream.getReader()
       type Part = NonNullable<Awaited<ReturnType<typeof reader.read>>['value']>
       const buffered: Part[] = []
+
+      // Watchdog: некоторые OpenAI-совместимые прокси ПРИНИМАЮТ запрос и
+      // потом молча висят — ни error-part, ни контента, вечный спиннер в UI.
+      // Если за WATCHDOG_MS не пришло НИ ОДНОГО чанка — показываем понятную
+      // ошибку вместо бесконечного ожидания.
+      const WATCHDOG_MS = 60_000
+      const watchdogError = (): Part =>
+        ({
+          type: 'error',
+          error: new Error(
+            `Провайдер молчит более ${Math.round(WATCHDOG_MS / 1000)}с: соединение принято, но модель не отвечает. Ключ живой, но этот эндпоинт/модель зависает — попробуйте другую модель или провайдера.`,
+          ),
+        }) as Part
+      const readWithWatchdog = () =>
+        Promise.race([
+          reader.read(),
+          new Promise<{ timeout: true }>((resolve) =>
+            setTimeout(() => resolve({ timeout: true }), WATCHDOG_MS),
+          ),
+        ])
+
       try {
         for (;;) {
-          const { done, value } = await reader.read()
+          const result = await readWithWatchdog()
+          if ('timeout' in result) {
+            buffered.push(watchdogError())
+            void reader.cancel().catch(() => {})
+            break
+          }
+          const { done, value } = result
           if (done) break
           buffered.push(value)
           const part = value as { type: string; error?: unknown }
@@ -1015,7 +1045,14 @@ or <design-choices> — those already render as chips).`
           for (const p of buffered) controller.enqueue(p)
         },
         async pull(controller) {
-          const { done, value } = await reader.read()
+          const result = await readWithWatchdog()
+          if ('timeout' in result) {
+            controller.enqueue(watchdogError())
+            controller.close()
+            void reader.cancel().catch(() => {})
+            return
+          }
+          const { done, value } = result
           if (done) controller.close()
           else controller.enqueue(value)
         },

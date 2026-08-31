@@ -1,8 +1,26 @@
 import { betterAuth } from 'better-auth'
 import { username, anonymous, multiSession } from 'better-auth/plugins'
-import { pool } from '@/lib/db'
+import { pool, db } from '@/lib/db'
+import { user as userTable } from '@/lib/db/schema'
+import { eq } from 'drizzle-orm'
 import { sendEmail, emailLayout } from '@/lib/email'
 import { migrateGuestData } from '@/lib/migrate-guest'
+
+/** Локальный режим «без регистрации» (desktop / local-first IDE). */
+const LOCAL_MODE = process.env.AURA_LOCAL_MODE !== '0'
+
+/** Повысить пользователя до superadmin (устойчиво к немигрированной схеме). */
+async function promoteSuperadmin(userId: string): Promise<void> {
+  if (!LOCAL_MODE || !userId) return
+  try {
+    await db
+      .update(userTable)
+      .set({ role: 'superadmin', updatedAt: new Date() })
+      .where(eq(userTable.id, userId))
+  } catch {
+    /* schema not migrated yet — ignore */
+  }
+}
 
 export const auth = betterAuth({
   database: pool,
@@ -33,6 +51,18 @@ export const auth = betterAuth({
               data: { ...userData, username: tag, displayUsername: tag },
             }
           }
+        },
+        // В локальном режиме сразу после создания даём полную админку.
+        after: async (createdUser) => {
+          await promoteSuperadmin((createdUser as { id: string }).id)
+        },
+      },
+    },
+    session: {
+      create: {
+        // На каждый вход гарантируем админку даже старым аккаунтам.
+        after: async (session) => {
+          await promoteSuperadmin((session as { userId: string }).userId)
         },
       },
     },
@@ -78,6 +108,9 @@ export const auth = betterAuth({
   },
   trustedOrigins: [
     'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://tauri.localhost',
+    'tauri://localhost',
     'https://*.vusercontent.net',
     ...(process.env.V0_RUNTIME_URL ? [process.env.V0_RUNTIME_URL] : []),
     ...(process.env.VERCEL_URL ? [`https://${process.env.VERCEL_URL}`] : []),

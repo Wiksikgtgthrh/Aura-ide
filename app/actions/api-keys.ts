@@ -16,6 +16,10 @@ import {
   probeModel,
   probeFailReason,
 } from '@/lib/model-probe'
+import {
+  getKeyHealthSummary,
+  type KeyHealthSummary,
+} from '@/lib/api-key-health'
 
 async function getUserIdOrNull() {
   const session = await getSession()
@@ -447,6 +451,20 @@ export async function checkAllApiKeys(): Promise<ApiKeyItem[] | null> {
 
   revalidateTag('api-keys', 'max')
   return getApiKeys()
+}
+
+/** Сводка здоровья ключа (история проверок, скорость, аптайм) для UI. */
+export async function getApiKeyHealth(id: number): Promise<KeyHealthSummary | null> {
+  const userId = await getUserIdOrNull()
+  if (!userId) return null
+  // Проверяем владение ключом, чтобы нельзя было читать чужую историю.
+  const [row] = await db
+    .select({ id: apiKeys.id })
+    .from(apiKeys)
+    .where(and(eq(apiKeys.id, id), eq(apiKeys.userId, userId)))
+    .limit(1)
+  if (!row) return null
+  return getKeyHealthSummary(id)
 }
 
 export type BulkImportResult = { created: number; failed: number }

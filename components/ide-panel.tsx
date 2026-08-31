@@ -70,6 +70,19 @@ import { parseAnsi } from '@/lib/ansi'
 import type { CheckpointListItem } from '@/lib/chat-store'
 import useSWR from 'swr'
 import { getPreferences } from '@/app/actions/preferences'
+import {
+  isDesktop,
+  onTermOutput,
+  termRun,
+  termKill,
+  onPreview,
+  previewStart,
+  previewStop,
+} from '@/lib/tauri'
+import {
+  prepareDesktopTerminal,
+  finishDesktopTerminal,
+} from '@/app/actions/desktop-terminal'
 
 const MonacoDiffEditor = dynamic(
   () => import('@monaco-editor/react').then((m) => m.DiffEditor),
@@ -1215,8 +1228,11 @@ export function IdePanel({
   // VS Code-style dock: bottom (default) or right, with a resizable size.
   const [dockPos, setDockPos] = useState<'bottom' | 'right'>('bottom')
   const [panelSize, setPanelSize] = useState(224)
+  // В desktop-режиме здесь лежит id нативной команды (для Ctrl+C → kill).
+  const nativeTermRef = useRef<string | null>(null)
   const interruptTerminal = useCallback(() => {
     termAbortRef.current?.abort()
+    if (nativeTermRef.current) void termKill(nativeTermRef.current)
   }, [])
 
   const runRealCommand = useCallback(
@@ -1225,6 +1241,57 @@ export function IdePanel({
         appendEntry('error', 'Терминал доступен только в сохранённом проекте', 'term')
         return ''
       }
+
+      // --- Desktop (Tauri): команда исполняется НАТИВНО на машине ---------//
+      // пользователя Rust-ядром: быстрее Docker, без лишних слоёв. Проект
+      // материализуется из Postgres на диск, после команды изменения
+      // возвращаются обратно в редактор.
+      if (isDesktop()) {
+        setTermRunning(true)
+        setConsoleOpen(true)
+        setFocusTermEpoch((e) => e + 1)
+        let plain = ''
+        try {
+          const dir = await prepareDesktopTerminal(chatId)
+          if (!dir) {
+            appendEntry('error', 'Не удалось подготовить проект на диске', 'term')
+            return ''
+          }
+          const termId = `${chatId}-${Date.now()}`
+          nativeTermRef.current = termId
+          const unlisten = await onTermOutput(termId, (chunk) => {
+            if (chunk.done) return
+            plain += chunk.data
+            appendEntry('log', chunk.data, 'term')
+          })
+          try {
+            await termRun(termId, dir, line)
+          } finally {
+            unlisten()
+            nativeTermRef.current = null
+          }
+          // Обратный синк: изменённые/новые файлы с диска → БД + редактор.
+          const files = await finishDesktopTerminal(chatId)
+          if (files && typeof files === 'object' && Object.keys(files).length > 0) {
+            setLocalFiles((prev) => {
+              const next = new Map(prev)
+              for (const [p, c] of Object.entries(files)) next.set(p, c)
+              return next
+            })
+          }
+        } catch (err) {
+          appendEntry(
+            'error',
+            `Ошибка терминала: ${err instanceof Error ? err.message : 'unknown'}`,
+            'term',
+          )
+        } finally {
+          setTermRunning(false)
+        }
+        // AI получает вывод без ANSI-escape (как и в веб-режиме).
+        return plain.replace(/\x1b\[[0-9;]*m/g, '')
+      }
+
       const controller = new AbortController()
       termAbortRef.current = controller
       setTermRunning(true)
@@ -1641,6 +1708,38 @@ export function IdePanel({
   const startLive = useCallback(async () => {
     if (!chatId || liveState === 'starting') return
     setLiveState('starting')
+
+    // --- Desktop (Tauri): dev-сервер превью запускает нативное ядро ---//
+    // на свободном порту, URL и логи приходят событиями из Rust.
+    if (isDesktop()) {
+      try {
+        const dir = await prepareDesktopTerminal(chatId)
+        if (!dir) {
+          setLiveState('off')
+          return
+        }
+        const prevId = `preview-${chatId}`
+        await onPreview(prevId, (ev) => {
+          if (ev.url) {
+            setLiveUrl(ev.url)
+            setLiveState('on')
+          }
+          if (ev.exited) {
+            setLiveState('off')
+            setLiveUrl(null)
+          }
+        })
+        await previewStart(prevId, dir)
+        // Перезагрузки iframe по расписанию — первый старт vite/Next долог.
+        ;[3000, 8000, 15000, 25000, 40000, 60000].forEach((ms) =>
+          setTimeout(() => setLiveReloadKey((k) => k + 1), ms),
+        )
+      } catch {
+        setLiveState('off')
+      }
+      return
+    }
+
     try {
       const res = await fetch('/api/preview-server', {
         method: 'POST',
@@ -1668,6 +1767,10 @@ export function IdePanel({
     if (!chatId) return
     setLiveState('off')
     setLiveUrl(null)
+    if (isDesktop()) {
+      await previewStop(`preview-${chatId}`).catch(() => {})
+      return
+    }
     try {
       await fetch('/api/preview-server', {
         method: 'POST',

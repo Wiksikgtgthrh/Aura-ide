@@ -1,6 +1,7 @@
 import { Suspense } from 'react'
 import { redirect } from 'next/navigation'
 import { getSession } from '@/lib/session'
+import { isLocalMode } from '@/lib/desktop-auth'
 import { AuthForm } from '@/components/auth-form'
 
 /**
@@ -27,6 +28,9 @@ export default function SignInPage({
 }: {
   searchParams: Promise<{ add?: string }>
 }) {
+  // Локальный режим (без регистрации): форма входа скрыта — сразу в IDE,
+  // авто-логин под локальным админом произойдёт через /api/local-login.
+  if (isLocalMode()) redirect('/')
   return (
     <>
       <AuthForm mode="sign-in" />

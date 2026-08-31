@@ -29,7 +29,9 @@ import {
   renameApiKeyGroup,
   deleteApiKeyGroup,
   moveApiKeyToGroup,
+  getApiKeyHealth,
 } from '@/app/actions/api-keys'
+import type { KeyHealthSummary } from '@/lib/api-key-health'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -53,6 +55,58 @@ import {
   Settings2,
   X,
 } from 'lucide-react'
+
+// ---- Key health (история проверок: пульс + скорость + аптайм) -------------
+
+/** Строка «пульса»: последние проверки точками (зелёная — ок, красная — падение). */
+function HealthPulse({ keyId, refreshKey }: { keyId: number; refreshKey: string }) {
+  const { data } = useSWR<KeyHealthSummary | null>(
+    `key-health-${keyId}-${refreshKey}`,
+    () => getApiKeyHealth(keyId),
+    { revalidateOnFocus: false, dedupingInterval: 30_000 },
+  )
+  if (!data || data.points.length === 0) return null
+
+  const pct = data.uptime === null ? null : Math.round(data.uptime * 100)
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 pb-2.5">
+      {/* Пульс — последние 20 проверок, свежая справа */}
+      <div className="flex items-center gap-[3px]" title="История последних проверок">
+        {[...data.points].reverse().map((p, i) => (
+          <span
+            key={i}
+            className={`size-1.5 rounded-full ${
+              p.status === 'active' || p.status === 'valid' ? 'bg-emerald-500' : 'bg-red-500'
+            }`}
+          />
+        ))}
+      </div>
+      {data.avgTtftMs !== null && (
+        <span className="font-mono text-[10px] text-muted-foreground/60" title="Среднее время до первого токена стрима за 24ч">
+          ~{data.avgTtftMs}мс до токена
+        </span>
+      )}
+      {data.avgPingMs !== null && (
+        <span className="font-mono text-[10px] text-muted-foreground/60" title="Средний пинг за 24ч">
+          пинг ~{data.avgPingMs}мс
+        </span>
+      )}
+      {pct !== null && (
+        <span
+          className={`text-[10px] font-medium ${pct >= 90 ? 'text-emerald-400/80' : pct >= 50 ? 'text-amber-400/80' : 'text-red-400/80'}`}
+          title="Доля успешных проверок за 24ч"
+        >
+          аптайм {pct}%
+        </span>
+      )}
+      {data.consecutiveFailures > 0 && (
+        <span className="text-[10px] text-red-400/70" title="Проверок подряд упало до последнего успеха">
+          {data.consecutiveFailures}× подряд упал
+        </span>
+      )}
+    </div>
+  )
+}
 
 // Default ping threshold in ms — keys above this are treated as high-latency
 const DEFAULT_PING_THRESHOLD = 1500
@@ -225,6 +279,10 @@ function KeyCard({
           </button>
         </div>
       </div>
+
+      {/* Здоровье ключа: пульс последних проверок + скорость + аптайм.
+          lastCheckedAt меняется при каждой проверке → SWR обновляет сводку. */}
+      <HealthPulse keyId={item.id} refreshKey={item.lastCheckedAt ?? ''} />
 
       {/* Fail reason banner — shown when user clicks status */}
       {isBlocked && item.failReason && showFailReason && (

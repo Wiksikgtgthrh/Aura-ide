@@ -1,9 +1,11 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { ArrowLeft, Check, Loader2 } from 'lucide-react'
 import { authClient } from '@/lib/auth-client'
+import { isDesktop } from '@/lib/tauri'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -11,6 +13,11 @@ import { useLanguage } from '@/lib/language'
 
 export default function ForgotPasswordPage() {
   const { t } = useLanguage()
+  const router = useRouter()
+  // Desktop (без регистрации): сброс пароля не нужен — сразу в IDE.
+  useEffect(() => {
+    if (isDesktop()) router.replace('/')
+  }, [router])
   const [email, setEmail] = useState('')
   const [loading, setLoading] = useState(false)
   const [sent, setSent] = useState(false)
