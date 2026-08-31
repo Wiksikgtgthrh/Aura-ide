@@ -1,5 +1,6 @@
--- token_usage создаётся ЗДЕСЬ ЖЕ (раньше — только в scripts/migrate-apikeys-usage.mjs),
--- иначе pnpm setup на чистой БД падает: relation "token_usage" does not exist
+-- 0007: индексы для горячих FK/фильтров. Таблицы token_usage и memories создаются
+-- ЗДЕСЬ ЖЕ (раньше — только в отдельных migrate-скриптах), иначе pnpm setup
+-- на чистой БД падает: relation "..." does not exist.
 CREATE TABLE IF NOT EXISTS token_usage (
   id TEXT PRIMARY KEY,
   "userId" TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
@@ -9,6 +10,16 @@ CREATE TABLE IF NOT EXISTS token_usage (
   "promptTokens" INTEGER NOT NULL DEFAULT 0,
   "completionTokens" INTEGER NOT NULL DEFAULT 0,
   "createdAt" TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS memories (
+  id text PRIMARY KEY,
+  "userId" text NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+  type text NOT NULL DEFAULT 'fact',
+  content text NOT NULL,
+  source text NOT NULL DEFAULT 'user-added',
+  enabled boolean NOT NULL DEFAULT true,
+  "createdAt" timestamp NOT NULL DEFAULT now(),
+  "updatedAt" timestamp NOT NULL DEFAULT now()
 );
 -- Hot foreign-key / filter indexes (created concurrently is not possible in a
 -- single migration txn here; these are cheap on an empty/small DB and IF NOT

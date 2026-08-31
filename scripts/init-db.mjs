@@ -102,7 +102,8 @@ async function initDatabase() {
           // Игнорируем ошибки "уже существует"
           if (
             !error.message.includes('already exists') &&
-            !error.message.includes('duplicate column')
+            !error.message.includes('duplicate column') &&
+            !(statement.toUpperCase().includes('CREATE INDEX') && error.code === '42P01')
           ) {
             throw error;
           }
