@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { spawnSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -111,7 +112,31 @@ async function initDatabase() {
       }
     }
 
-    console.log(`✅ БД инициализирована! (${migrationFiles.length} миграций, ${totalStatements} SQL команд)`);
+    // Таблицы, которые живут в companion-миграциях, а не в drizzle/*.sql.
+    // Без них свежая БД ломает AppShellLoader (api_key_groups, plugins, teams, api_keys...).
+    const companionScripts = [
+      'migrate-apikeys-usage.mjs',
+      'migrate-plugins.mjs',
+      'migrate-memories.mjs',
+      'migrate-teams.mjs',
+      'migrate-admin.mjs',
+      'migrate-farm.mjs',
+    ];
+    for (const script of companionScripts) {
+      console.log(`📝 Companion-миграция: ${script}`);
+      const r = spawnSync(process.execPath, [path.join(__dirname, script)], {
+        cwd: __dirname,
+        stdio: 'pipe',
+        env: process.env,
+        encoding: 'utf8',
+      });
+      const out = (r.stdout || '') + (r.stderr || '');
+      if (r.status !== 0 && !/already exists|duplicate|already has|already exists|column .* exists/i.test(out)) {
+        throw new Error(`companion ${script} завершился с кодом ${r.status}` + (out ? `: ${out.slice(0, 500)}` : ''));
+      }
+      if (r.status !== 0) console.log('   (таблицы уже существуют — повторный прогон, пропускаем)');
+    }
+    console.log(`✅ БД инициализирована! (${migrationFiles.length} миграций, ${totalStatements} SQL команд + companion-миграции)`);
 
   } catch (error) {
     console.error('❌ Ошибка при инициализации БД:', error.message);
