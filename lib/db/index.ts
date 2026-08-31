@@ -22,3 +22,8 @@ const url = getDatabaseUrl()
 export const pool = new Pool({ connectionString: url })
 
 export const db = drizzle(pool, { schema }) as NodePgDatabase<typeof schema>
+
+
+// Показываем, куда реально подключаемся (пароль маскируем) — видно в терминале next dev.
+const safeUrl = url.replace(/:[^:@\/]+@/, ':***@')
+console.log(`[aura-db] DB: ${safeUrl}`)
