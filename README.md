@@ -1,46 +1,103 @@
-# Aura IDE
+# My Project
 
-Настоящий десктоп IDE с AI-ассистентом на Tauri 2 + React 19.
+Next.js приложение с аутентификацией и управлением данными.
 
-## Стек
+## 🚀 Быстрый старт
 
-- **Backend**: Rust + Tauri 2, git2, portable-pty, ignore/grep (ripgrep as library)
-- **Frontend**: React 19 + TypeScript + Vite, Monaco, xterm.js, Zustand
-- **Contract**: `tauri-specta` — типизированные Rust ↔ TS команды через `src/lib/tauriApi.ts`
+### Первый запуск (новая установка)
 
-## Структура
-
-```
-aura-ide/
-├── crates/
-│   └── aura-core/          # Чистая бизнес-логика (fs / git / settings / search)
-├── src-tauri/              # Тонкий Tauri-адаптер (команды + события)
-├── src/                    # React-фронтенд (Агент 2)
-├── package.json
-└── vite.config.ts
-```
-
-## Разделение работы
-
-- **Агент 1** (backend) — `crates/aura-core/` + `src-tauri/`.
-- **Агент 2** (frontend) — `src/`, использует сгенерированные биндинги из `src/lib/tauriApi.ts`.
-
-## Скрипты
+Следуйте инструкциям в [SETUP.md](./SETUP.md). Тл;др:
 
 ```bash
-pnpm install                 # деп фронта
-pnpm tauri dev               # запуск в dev
-pnpm tauri build             # релиз-сборка
+# 1. Установите зависимости
+pnpm install
 
-# Только Rust
-cargo check -p aura-core     # проверка чистой логики
-cargo test -p aura-core      # тесты
+# 2. Создайте .env.development.local с DATABASE_URL, OPENAI_API_KEY и BETTER_AUTH_SECRET
+
+# 3. Инициализируйте БД
+pnpm setup
+
+# 4. Запустите проект
+pnpm dev
 ```
 
-## Требования системы
+### Повседневная разработка
 
-- Rust 1.80+ (stable)
-- Node 20+, pnpm 9+
-- Linux: `webkit2gtk-4.1`, `libsoup-3`, `gtk-3`
-- macOS: Xcode CLT
-- Windows: WebView2 (обычно уже стоит)
+```bash
+# Запустить dev сервер
+pnpm dev
+
+# Запустить линтер
+pnpm lint
+
+# Собрать для production
+pnpm build
+```
+
+## 📁 Структура проекта
+
+```
+.
+├── app/              # Next.js App Router
+├── components/       # Переиспользуемые компоненты
+├── lib/              # Утилиты и конфигурация
+│   ├── db/          # Drizzle ORM schema и utils
+│   └── auth/        # Better Auth конфигурация
+├── scripts/          # Управление БД и настройка
+├── drizzle/         # SQL миграции
+├── SETUP.md         # Инструкции по первой установке
+├── MIGRATIONS.md    # Инструкции по миграциям БД
+└── README.md        # Этот файл
+```
+
+## 🗄️ База данных
+
+Проект использует PostgreSQL с ORM Drizzle и миграциями.
+
+Для первого запуска:
+```bash
+pnpm setup  # Инициализирует БД автоматически
+```
+
+Для добавления новых миграций:
+```bash
+pnpm db:generate  # Генерирует миграцию
+pnpm db:push      # Применяет миграцию
+```
+
+Подробнее см. [MIGRATIONS.md](./MIGRATIONS.md)
+
+## 🔐 Аутентификация
+
+Проект использует Better Auth для управления сессиями и пользователями.
+
+Переменные окружения:
+- `BETTER_AUTH_SECRET` — секретный ключ для подписи сессий (обязателен)
+- `DATABASE_URL` — строка подключения к БД (обязателена)
+
+## 🤖 AI функции
+
+Интегрирован OpenAI API через AI SDK.
+
+Переменная окружения:
+- `OPENAI_API_KEY` — ключ OpenAI API (обязателен для AI функций)
+
+## 📦 Технологический стек
+
+- **Framework:** Next.js 16
+- **ORM:** Drizzle ORM
+- **Auth:** Better Auth
+- **AI:** OpenAI API + Vercel AI SDK
+- **UI:** shadcn/ui + Tailwind CSS
+- **Database:** PostgreSQL
+- **Package Manager:** pnpm
+
+## 🆘 Проблемы?
+
+Первый запуск? Посмотрите [SETUP.md](./SETUP.md) — там решения для распространённых проблем.
+
+Проблемы с БД? Посмотрите [MIGRATIONS.md](./MIGRATIONS.md).
+
+## 📝 Лицензия
+
+MIT
