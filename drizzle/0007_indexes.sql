@@ -1,6 +1,15 @@
 -- token_usage создаётся ЗДЕСЬ ЖЕ (раньше — только в scripts/migrate-apikeys-usage.mjs),
 -- иначе pnpm setup на чистой БД падает: relation "token_usage" does not exist
-
+CREATE TABLE IF NOT EXISTS token_usage (
+  id TEXT PRIMARY KEY,
+  "userId" TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+  "chatId" TEXT,
+  "apiKeyId" INTEGER,
+  "modelId" TEXT NOT NULL DEFAULT '',
+  "promptTokens" INTEGER NOT NULL DEFAULT 0,
+  "completionTokens" INTEGER NOT NULL DEFAULT 0,
+  "createdAt" TIMESTAMP NOT NULL DEFAULT NOW()
+);
 -- Hot foreign-key / filter indexes (created concurrently is not possible in a
 -- single migration txn here; these are cheap on an empty/small DB and IF NOT
 -- EXISTS keeps re-runs safe).
