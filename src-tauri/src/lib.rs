@@ -773,6 +773,8 @@ pub fn run() {
             git::git_diff,
             git::git_log,
             git::git_init,
+            git::git_show,
+            git::git_diff_all,
             // Интерактивный терминал (PTY)
             pty::pty_open,
             pty::pty_write,

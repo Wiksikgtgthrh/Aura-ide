@@ -233,6 +233,12 @@ export async function gitLog(cwd: string, limit = 50) {
 export async function gitInit(cwd: string) {
   return invoke<void>('git_init', { cwd })
 }
+export async function gitShow(cwd: string, path: string, rev?: string) {
+  return invoke<string>('git_show', { cwd, path, rev: rev ?? null })
+}
+export async function gitDiffAll(cwd: string, staged = false) {
+  return invoke<string>('git_diff_all', { cwd, staged })
+}
 
 // --- Диалог выбора папки ---------------------------------------------------
 

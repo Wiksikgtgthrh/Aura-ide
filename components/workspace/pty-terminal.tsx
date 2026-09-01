@@ -3,15 +3,18 @@
 /**
  * Настоящий интерактивный терминал: xterm.js во фронте + portable-pty в Rust.
  *
- * Работает всё: стрелка вверх / Ctrl+R history, vim / htop / less, цвета,
- * unicode, resize по ResizeObserver, копирование выделения. В браузере
- * (не desktop) деградирует до сообщения «доступно только в desktop».
+ * Через ref-хендл (`PtyTerminalHandle`) наружу отдаём `insertText(cmd, submit)`
+ * — чтобы AI-попап (Ctrl+K) мог подсунуть команду прямо в приглашение.
  */
 
-import { useEffect, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { isDesktop, onPty, ptyClose, ptyOpen, ptyResize, ptyWrite } from '@/lib/tauri'
 
-// xterm.js подгружаем dynamic, чтобы не тащить его в SSR.
+export type PtyTerminalHandle = {
+  insertText: (text: string, submit: boolean) => void
+  focus: () => void
+}
+
 let xtermPromise: Promise<{ Terminal: any; FitAddon: any; WebLinksAddon: any }> | null = null
 async function loadXterm() {
   if (!xtermPromise) {
@@ -29,9 +32,13 @@ async function loadXterm() {
   return xtermPromise
 }
 
-export function PtyTerminal({ id, cwd }: { id: string; cwd: string }) {
+export const PtyTerminal = forwardRef<PtyTerminalHandle, { id: string; cwd: string }>(function PtyTerminal(
+  { id, cwd },
+  ref,
+) {
   const hostRef = useRef<HTMLDivElement>(null)
   const alive = useRef(true)
+  const termRef = useRef<any>(null)
 
   useEffect(() => {
     alive.current = true
@@ -61,6 +68,7 @@ export function PtyTerminal({ id, cwd }: { id: string; cwd: string }) {
         allowProposedApi: true,
         scrollback: 5000,
       })
+      termRef.current = term
       fit = new FitAddon()
       term.loadAddon(fit)
       term.loadAddon(new WebLinksAddon())
@@ -110,9 +118,22 @@ export function PtyTerminal({ id, cwd }: { id: string; cwd: string }) {
       } catch {
         /* ignore */
       }
+      termRef.current = null
       if (opened) void ptyClose(id).catch(() => {})
     }
   }, [id, cwd])
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      insertText: (text: string, submit: boolean) => {
+        void ptyWrite(id, submit ? `${text}\r` : text).catch(() => {})
+        termRef.current?.focus?.()
+      },
+      focus: () => termRef.current?.focus?.(),
+    }),
+    [id],
+  )
 
   if (!isDesktop()) {
     return (
@@ -122,4 +143,4 @@ export function PtyTerminal({ id, cwd }: { id: string; cwd: string }) {
     )
   }
   return <div ref={hostRef} className="h-full w-full bg-black p-1" />
-}
+})

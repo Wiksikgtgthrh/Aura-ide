@@ -71,9 +71,37 @@ type Props = {
   onToggle: (path: string) => void
   onOpen: (node: FsNode) => void
   onChanged: () => void
+  /** Опционально: обновлять пути открытых табов после перемещения. */
+  onMoved?: (from: string, to: string) => void
 }
 
-export function FileTree({ tree, root, git, expanded, active, onToggle, onOpen, onChanged }: Props) {
+export function FileTree({
+  tree,
+  root,
+  git,
+  expanded,
+  active,
+  onToggle,
+  onOpen,
+  onChanged,
+  onMoved,
+}: Props) {
+  const move = useCallback(
+    async (from: string, toDir: string) => {
+      const name = baseName(from)
+      const to = joinPath(toDir, name)
+      if (from === to) return
+      try {
+        await fsRename(from, to)
+        onMoved?.(from, to)
+        onChanged()
+      } catch (e) {
+        alert(`Не удалось переместить: ${(e as Error).message}`)
+      }
+    },
+    [onChanged, onMoved],
+  )
+
   const [menu, setMenu] = useState<{ x: number; y: number; items: CtxItem[] } | null>(null)
   const [rename, setRename] = useState<{ path: string; value: string } | null>(null)
   const [creating, setCreating] = useState<{ parent: string; kind: 'file' | 'dir'; value: string } | null>(
@@ -259,6 +287,7 @@ export function FileTree({ tree, root, git, expanded, active, onToggle, onOpen, 
           onCreateChange={(v) => creating && setCreating({ ...creating, value: v })}
           onCreateCommit={commitCreate}
           onCreateCancel={() => setCreating(null)}
+          onMove={move}
         />
       ))}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={closeMenu} />}
@@ -284,6 +313,7 @@ function TreeNode(props: {
   onCreateChange: (v: string) => void
   onCreateCommit: () => void
   onCreateCancel: () => void
+  onMove?: (from: string, toDir: string) => void
 }) {
   const {
     node,
@@ -309,6 +339,7 @@ function TreeNode(props: {
   const badge = gitBadge(node.path, root, git)
   const isRenaming = rename?.path === node.path
   const isCreatingHere = creating?.parent === node.path && node.is_dir && isOpen
+  const [dragOver, setDragOver] = useState(false)
 
   let icon: { Icon: any; className: string }
   if (node.is_dir) icon = iconForFolder(isOpen)
@@ -318,11 +349,30 @@ function TreeNode(props: {
     <div>
       <div
         role="button"
+        draggable={!isRenaming}
+        onDragStart={(e) => {
+          e.dataTransfer.effectAllowed = 'move'
+          e.dataTransfer.setData('application/x-aura-path', node.path)
+        }}
+        onDragOver={(e) => {
+          if (!node.is_dir) return
+          e.preventDefault()
+          e.dataTransfer.dropEffect = 'move'
+          if (!dragOver) setDragOver(true)
+        }}
+        onDragLeave={() => dragOver && setDragOver(false)}
+        onDrop={(e) => {
+          setDragOver(false)
+          if (!node.is_dir) return
+          e.preventDefault()
+          const from = e.dataTransfer.getData('application/x-aura-path')
+          if (from && from !== node.path && props.onMove) props.onMove(from, node.path)
+        }}
         onContextMenu={(e) => onContext(e, node)}
         onClick={() => (node.is_dir ? onToggle(node.path) : onOpen(node))}
         className={`flex w-full items-center gap-1 rounded px-1 py-[3px] text-left text-[13px] hover:bg-accent ${
           active === node.path ? 'bg-accent text-foreground' : 'text-muted-foreground'
-        }`}
+        } ${dragOver ? 'ring-1 ring-primary' : ''}`}
         style={{ paddingLeft: depth * 12 + 4 }}
       >
         {node.is_dir ? (

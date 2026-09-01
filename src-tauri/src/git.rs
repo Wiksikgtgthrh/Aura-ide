@@ -306,3 +306,31 @@ pub fn git_init(cwd: String) -> Result<(), AuraError> {
     run(c)?;
     Ok(())
 }
+
+/// Содержимое файла на указанном ревизии — по умолчанию HEAD. Используем
+/// для Monaco DiffEditor (оригинал HEAD:<path> vs текущий worktree).
+#[tauri::command]
+pub fn git_show(cwd: String, path: String, rev: Option<String>) -> Result<String, AuraError> {
+    let r = rev.as_deref().unwrap_or("HEAD");
+    let mut c = git(&cwd);
+    c.args(["show", &format!("{r}:{path}")]);
+    // При новом файле git отдаёт код 128 — считаем это «файл не существовал»
+    // и возвращаем пустую строку, чтобы дифф показал полное добавление.
+    let out = c.output()?;
+    if !out.status.success() {
+        return Ok(String::new());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Полный diff всего рабочего дерева (для AI-ревью). Пусто = чистое дерево.
+#[tauri::command]
+pub fn git_diff_all(cwd: String, staged: bool) -> Result<String, AuraError> {
+    let mut c = git(&cwd);
+    c.arg("diff");
+    if staged {
+        c.arg("--cached");
+    }
+    c.arg("--no-color");
+    run_allow_fail(c)
+}

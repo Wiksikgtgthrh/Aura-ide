@@ -57,15 +57,19 @@ import { iconForFile } from '@/lib/file-icons'
 import { FileTree } from '@/components/workspace/file-tree'
 import { CommandPalette, type PaletteCommand } from '@/components/workspace/command-palette'
 import { GlobalSearchPanel } from '@/components/workspace/global-search'
-import { PtyTerminal } from '@/components/workspace/pty-terminal'
+import { PtyTerminal, type PtyTerminalHandle } from '@/components/workspace/pty-terminal'
+import { TerminalAiPopup } from '@/components/workspace/terminal-ai-popup'
 import { GitPanel } from '@/components/workspace/git-panel'
 import { PreviewPanel } from '@/components/workspace/preview-panel'
-import { AiSidePanel } from '@/components/workspace/ai-side-panel'
+import { AiSidePanel, type AiActionPreset } from '@/components/workspace/ai-side-panel'
 import { ProblemsPanel, subscribeMonacoMarkers, type ProblemsMarker } from '@/components/workspace/problems-panel'
 import { Breadcrumbs } from '@/components/workspace/breadcrumbs'
+import { SymbolOutline } from '@/components/workspace/symbol-outline'
 import { loadSession, saveSession } from '@/lib/session-store'
 import { loadWorkspaceSettings, saveWorkspaceSettings, type WorkspaceSettings } from '@/lib/workspace-settings'
 import { runFormatter, shouldFormat } from '@/lib/format-on-save'
+import { primeMonacoTsProject, registerAuraThemes, registerMonacoAi } from '@/lib/monaco-ai'
+import { termRun } from '@/lib/tauri'
 
 const MonacoEditor = dynamic(() => import('@monaco-editor/react'), {
   ssr: false,
@@ -123,7 +127,8 @@ function flattenFiles(nodes: FsNode[], out: string[] = []): string[] {
 }
 
 type BottomTab = 'terminal' | 'problems'
-type LeftTab = 'files' | 'search' | 'git'
+type LeftTab = 'files' | 'search' | 'git' | 'outline'
+type ThemeName = 'aura-dark' | 'vs-dark' | 'vs' | 'hc-black' | 'aura-light'
 
 export function LocalWorkspace({ root, onClose }: { root: string; onClose: () => void }) {
   // --- Основное состояние ---------------------------------------------------
@@ -156,6 +161,16 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
   const [markers, setMarkers] = useState<ProblemsMarker[]>([])
   const [showSettings, setShowSettings] = useState(false)
 
+  // AI: препостав для панели (code-actions/ревью-diff кладут сюда input).
+  const [aiPreset, setAiPreset] = useState<AiActionPreset | null>(null)
+
+  // Тема редактора — переключается из палитры, кладётся в .aura/settings.json.
+  const [themeName, setThemeName] = useState<ThemeName>('aura-dark')
+
+  // AI-попап в терминале (Ctrl+K над PTY).
+  const [aiTermOpen, setAiTermOpen] = useState(false)
+  const ptyRef = useRef<PtyTerminalHandle>(null)
+
   // Refs — избегаем стейл-клоужеров в кнопках/шорткатах
   const contentRef = useRef(content)
   contentRef.current = content
@@ -181,7 +196,10 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
     void refresh()
   }, [refresh])
 
-  // Watcher — авто-refresh при внешних изменениях.
+  // Внешние изменения на диске: (a) refresh дерева/git, (b) auto-reload
+  // открытого чистого файла, (c) баннер «файл изменился снаружи» для
+  // грязного файла.
+  const [externallyChanged, setExternallyChanged] = useState<string | null>(null)
   useEffect(() => {
     if (!isDesktop()) return
     let unlisten: (() => void) | null = null
@@ -192,6 +210,22 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
         if (ev.root !== root) return
         if (debounce) clearTimeout(debounce)
         debounce = setTimeout(() => void refresh(), 250)
+        // Для каждого затронутого файла — если он открыт в табе, тянем его.
+        for (const p of ev.paths) {
+          if (!openTabs.includes(p)) continue
+          if (dirtyRef.current.has(p)) {
+            // грязный файл — только предупреждаем.
+            if (p === activeRef.current) setExternallyChanged(p)
+            continue
+          }
+          // чистый — молча перечитываем.
+          fsRead(p)
+            .then((fresh) => {
+              setContents((prev) => new Map(prev).set(p, fresh))
+              if (p === activeRef.current) setContent(fresh)
+            })
+            .catch(() => {})
+        }
       })
     })()
     return () => {
@@ -199,11 +233,16 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
       void fsWatchStop(root).catch(() => {})
       if (debounce) clearTimeout(debounce)
     }
-  }, [root, refresh])
+  }, [root, refresh, openTabs])
 
   // Загрузить настройки проекта.
   useEffect(() => {
-    ;(async () => setSettings(await loadWorkspaceSettings(root)))()
+    ;(async () => {
+      const s = await loadWorkspaceSettings(root)
+      setSettings(s)
+      const t = (s as any)?.editor?.theme as ThemeName | undefined
+      if (t) setThemeName(t)
+    })()
   }, [root])
 
   // Восстановить сессию: раскрытые папки + табы + активный файл.
@@ -349,6 +388,54 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
   // --- Список файлов для Quick Open ----------------------------------------
   const allFiles = useMemo(() => flattenFiles(tree), [tree])
 
+  // Обёртка для action-провайдера Monaco: открывает AI-панель с preset'ом.
+  const runAiAction = useCallback(
+    (payload: { action: any; code: string; language: string; path?: string }) => {
+      setAiPreset({
+        action: payload.action,
+        input: payload.code,
+        language: payload.language,
+        path: payload.path,
+      })
+      setRightOpen(true)
+      setRightTab('ai')
+    },
+    [],
+  )
+
+  // При появлении Monaco: темы, AI-провайдеры, TS-IntelliSense.
+  const primeMonaco = useCallback(
+    async (monaco: any) => {
+      monacoInstance.current = monaco
+      try {
+        registerAuraThemes(monaco)
+      } catch {
+        /* ignore */
+      }
+      // Inline completions + code actions. Enabled — из settings.
+      registerMonacoAi(monaco, {
+        isInlineEnabled: () =>
+          (settingsRef.current as any)?.ai?.inlineCompletions !== false,
+        onRunAction: runAiAction,
+      })
+      // TS проектные типы — только для проектов с package.json/tsconfig.
+      try {
+        await primeMonacoTsProject(
+          monaco,
+          allFilesRef.current,
+          (p) => fsRead(p),
+          root,
+        )
+      } catch {
+        /* тихо */
+      }
+    },
+    [root, runAiAction],
+  )
+
+  const allFilesRef = useRef<string[]>([])
+  allFilesRef.current = allFiles
+
   // --- Palette commands ----------------------------------------------------
   const commands: PaletteCommand[] = useMemo(
     () => [
@@ -392,29 +479,85 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
         run: () => activeFile && setSplitFile(activeFile),
       },
       {
+        id: 'outline',
+        title: 'Вид: структура файла',
+        run: () => {
+          setLeftOpen(true)
+          setLeftTab('outline')
+        },
+      },
+      {
         id: 'save',
         title: 'Файл: сохранить',
         hint: 'Ctrl+S',
         run: () => void save(),
       },
       {
+        id: 'ai-toggle-inline',
+        title: `AI: ${
+          (settings as any)?.ai?.inlineCompletions === false ? 'включить' : 'выключить'
+        } ghost-text`,
+        run: async () => {
+          const next = {
+            ...settings,
+            ai: {
+              ...((settings as any).ai ?? {}),
+              inlineCompletions: !((settings as any)?.ai?.inlineCompletions !== false),
+            },
+          }
+          setSettings(next)
+          await saveWorkspaceSettings(root, next).catch(() => {})
+        },
+      },
+      {
+        id: 'ai-terminal',
+        title: 'AI: команда в терминале (Ctrl+K)',
+        hint: 'Ctrl+K',
+        run: () => {
+          setBottomOpen(true)
+          setBottomTab('terminal')
+          setAiTermOpen(true)
+        },
+      },
+      {
         id: 'close-folder',
         title: 'Файл: закрыть папку',
         run: onClose,
       },
+      // Темы редактора — конкретный выбор.
+      ...(['aura-dark', 'vs-dark', 'vs', 'aura-light', 'hc-black'] as ThemeName[]).map(
+        (t) => ({
+          id: `theme-${t}`,
+          title: `Тема: ${t}`,
+          run: async () => {
+            setThemeName(t)
+            const next = {
+              ...settings,
+              editor: { ...settings.editor, theme: t } as any,
+            }
+            setSettings(next)
+            await saveWorkspaceSettings(root, next).catch(() => {})
+          },
+        }),
+      ),
+      // Задачи из .aura/settings.json — запускаются в реальном PTY, если открыт.
       ...(settings.tasks ?? []).map((t, i) => ({
         id: `task-${i}`,
         title: `Задача: ${t.label}`,
         run: () => {
           setBottomOpen(true)
           setBottomTab('terminal')
-          // TODO: команда прокинется в PTY стандартным путём — пока пусть
-          // пользователь скопирует её и выполнит в открытом терминале.
-          void navigator.clipboard?.writeText(t.command).catch(() => {})
+          // Если PTY активен — вставляем и выполняем прямо в нём.
+          if (ptyRef.current) {
+            ptyRef.current.insertText(t.command, true)
+            return
+          }
+          // Фолбэк — одноразовый термналран (без интерактива).
+          void termRun(`task-${i}-${Date.now()}`, root, t.command).catch(() => {})
         },
       })),
     ],
-    [refresh, save, onClose, activeFile, settings.tasks],
+    [refresh, save, onClose, activeFile, settings, root],
   )
 
   // --- Глобальные шорткаты --------------------------------------------------
@@ -450,6 +593,16 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
         e.preventDefault()
         setBottomOpen((v) => !v)
         setBottomTab('terminal')
+      } else if (meta && e.key.toLowerCase() === 'k') {
+        // Ctrl+K — AI-подсказка. Если открыт терминал — попап над PTY,
+        // иначе — Command Palette с готовой префикс-подсказкой (?? ).
+        e.preventDefault()
+        if (bottomOpen && bottomTab === 'terminal') setAiTermOpen(true)
+        else {
+          setBottomOpen(true)
+          setBottomTab('terminal')
+          setAiTermOpen(true)
+        }
       } else if (meta && e.key.toLowerCase() === 'w') {
         if (activeRef.current) {
           e.preventDefault()
@@ -459,7 +612,7 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [save, closeTab])
+  }, [save, closeTab, bottomOpen, bottomTab])
 
   // --- Split-контент --------------------------------------------------------
   useEffect(() => {
@@ -584,6 +737,12 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
                 active={leftTab === 'git'}
                 onClick={() => setLeftTab('git')}
               />
+              <SidebarTab
+                icon={<CommandIcon className="size-3.5" />}
+                label="Outline"
+                active={leftTab === 'outline'}
+                onClick={() => setLeftTab('outline')}
+              />
             </div>
             <div className="min-h-0 flex-1 overflow-hidden">
               {leftTab === 'files' && (
@@ -597,6 +756,25 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
                     onToggle={toggleDir}
                     onOpen={openNode}
                     onChanged={refresh}
+                    onMoved={(from, to) => {
+                      // Обновляем состояние табов и активного файла — путь перемещённого файла изменился.
+                      setOpenTabs((tabs) => tabs.map((p) => (p === from ? to : p)))
+                      setContents((prev) => {
+                        if (!prev.has(from)) return prev
+                        const n = new Map(prev)
+                        n.set(to, n.get(from)!)
+                        n.delete(from)
+                        return n
+                      })
+                      setDirty((s) => {
+                        if (!s.has(from)) return s
+                        const n = new Set(s)
+                        n.delete(from)
+                        n.add(to)
+                        return n
+                      })
+                      if (activeRef.current === from) setActiveFile(to)
+                    }}
                   />
                   {tree.length === 0 && (
                     <p className="px-2 py-3 text-xs text-muted-foreground">Папка пуста</p>
@@ -610,7 +788,31 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
                 />
               )}
               {leftTab === 'git' && (
-                <GitPanel root={root} onOpenFile={(p) => void openFileByPath(p)} />
+                <GitPanel
+                  root={root}
+                  onOpenFile={(p) => void openFileByPath(p)}
+                  onOpenAiReview={(diff) => {
+                    setAiPreset({
+                      action: 'diff-review',
+                      input: diff,
+                      title: 'AI Review · git diff',
+                    })
+                    setRightOpen(true)
+                    setRightTab('ai')
+                  }}
+                />
+              )}
+              {leftTab === 'outline' && (
+                <SymbolOutline
+                  monaco={monacoInstance.current}
+                  activeFile={activeFile}
+                  onGoto={(line, column) => {
+                    const editor = monacoInstance.current?.editor?.getEditors?.()?.[0]
+                    editor?.revealLineInCenter?.(line)
+                    editor?.setPosition?.({ lineNumber: line, column })
+                    editor?.focus?.()
+                  }}
+                />
               )}
             </div>
           </aside>
@@ -670,6 +872,39 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
           {/* Breadcrumbs */}
           {activeFile && <Breadcrumbs root={root} file={activeFile} />}
 
+          {/* Баннер: файл изменился снаружи, а в буфере — несохранённые правки */}
+          {externallyChanged && activeFile === externallyChanged && (
+            <div className="flex items-center gap-2 border-b border-border bg-amber-500/10 px-3 py-1 text-[11px] text-amber-300">
+              <span>Файл изменился на диске, но у вас есть несохранённые правки.</span>
+              <button
+                type="button"
+                className="ml-auto rounded bg-amber-500/20 px-2 py-0.5 hover:bg-amber-500/30"
+                onClick={async () => {
+                  const fresh = await fsRead(externallyChanged).catch(() => null)
+                  if (fresh != null) {
+                    setContent(fresh)
+                    setContents((prev) => new Map(prev).set(externallyChanged, fresh))
+                    setDirty((s) => {
+                      const n = new Set(s)
+                      n.delete(externallyChanged)
+                      return n
+                    })
+                  }
+                  setExternallyChanged(null)
+                }}
+              >
+                Перезагрузить с диска
+              </button>
+              <button
+                type="button"
+                className="rounded border border-amber-500/30 px-2 py-0.5 hover:bg-amber-500/10"
+                onClick={() => setExternallyChanged(null)}
+              >
+                Оставить моё
+              </button>
+            </div>
+          )}
+
           {/* Редактор + split */}
           <div className="flex min-h-0 flex-1">
             <div className="min-h-0 min-w-0 flex-1">
@@ -679,7 +914,7 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
                   language={monacoLanguage(activeFile)}
                   value={content}
                   onMount={(_editor, monaco) => {
-                    monacoInstance.current = monaco
+                    void primeMonaco(monaco)
                     subscribeMonacoMarkers(monaco, setMarkers)
                   }}
                   onChange={(v) => {
@@ -687,7 +922,7 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
                     setContents((prev) => new Map(prev).set(activeFile, v ?? ''))
                     setDirty((s) => new Set(s).add(activeFile))
                   }}
-                  theme="vs-dark"
+                  theme={themeName}
                   options={{
                     minimap: { enabled: false },
                     fontSize: settings.editor?.fontSize ?? 13,
@@ -696,6 +931,7 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
                     wordWrap: settings.editor?.wordWrap ?? 'off',
                     automaticLayout: true,
                     scrollBeyondLastLine: false,
+                    inlineSuggest: { enabled: true },
                   }}
                 />
               ) : (
@@ -726,7 +962,7 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
                     language={monacoLanguage(splitFile)}
                     value={splitContent}
                     onChange={(v) => setSplitContent(v ?? '')}
-                    theme="vs-dark"
+                    theme={themeName}
                     options={{
                       minimap: { enabled: false },
                       fontSize: settings.editor?.fontSize ?? 13,
@@ -776,8 +1012,19 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
                   </button>
                 </div>
               </div>
-              <div className="min-h-0 flex-1">
-                {bottomTab === 'terminal' && <PtyTerminal id={`pty:${root}`} cwd={root} />}
+              <div className="relative min-h-0 flex-1">
+                {bottomTab === 'terminal' && (
+                  <>
+                    <PtyTerminal ref={ptyRef} id={`pty:${root}`} cwd={root} />
+                    {aiTermOpen && (
+                      <TerminalAiPopup
+                        onClose={() => setAiTermOpen(false)}
+                        os={typeof navigator !== 'undefined' ? navigator.platform : 'unix'}
+                        onInsert={(cmd, submit) => ptyRef.current?.insertText(cmd, submit)}
+                      />
+                    )}
+                  </>
+                )}
                 {bottomTab === 'problems' && (
                   <ProblemsPanel
                     markers={markers}
@@ -815,7 +1062,18 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
             </div>
             <div className="min-h-0 flex-1">
               {rightTab === 'ai' && (
-                <AiSidePanel activeFile={activeFile} onClose={() => setRightOpen(false)} />
+                <AiSidePanel
+                  activeFile={activeFile}
+                  onClose={() => setRightOpen(false)}
+                  preset={aiPreset}
+                  onConsumePreset={() => setAiPreset(null)}
+                  onApplyCode={(code) => {
+                    if (!activeFile) return
+                    setContent(code)
+                    setContents((prev) => new Map(prev).set(activeFile, code))
+                    setDirty((s) => new Set(s).add(activeFile))
+                  }}
+                />
               )}
               {rightTab === 'preview' && <PreviewPanel root={root} />}
             </div>
@@ -937,6 +1195,44 @@ function SettingsDialog({
               />
               Перенос строк (word wrap)
             </label>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">Тема</label>
+            <select
+              value={(s.editor as any)?.theme ?? 'aura-dark'}
+              onChange={(e) =>
+                setS((v) => ({
+                  ...v,
+                  editor: { ...v.editor, theme: e.target.value } as any,
+                }))
+              }
+              className="h-8 w-48 rounded border border-border bg-background px-2 text-xs outline-none"
+            >
+              <option value="aura-dark">Aura Dark</option>
+              <option value="vs-dark">VS Dark</option>
+              <option value="vs">VS Light</option>
+              <option value="aura-light">Aura Light</option>
+              <option value="hc-black">High Contrast</option>
+            </select>
+          </div>
+          <div className="rounded border border-border p-3">
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={(s as any).ai?.inlineCompletions !== false}
+                onChange={(e) =>
+                  setS((v) => ({
+                    ...v,
+                    ai: { ...(v as any).ai, inlineCompletions: e.target.checked },
+                  }))
+                }
+              />
+              AI inline completions (Copilot-подобный ghost text)
+            </label>
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              Использует ваш активный API-ключ; каждая пауза при вводе — короткий
+              non-streaming запрос.
+            </p>
           </div>
           <div className="rounded border border-border p-3">
             <label className="flex items-center gap-2 text-xs">

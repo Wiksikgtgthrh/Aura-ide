@@ -17,25 +17,28 @@ import {
   Check,
   GitBranch,
   GitCommit,
-  History,
   Loader2,
   Minus,
   Plus,
   RefreshCw,
+  Sparkles,
   Undo2,
 } from 'lucide-react'
 import {
+  fsRead,
   gitBranch,
   gitBranchList,
   gitCheckout,
   gitCommit,
   gitCreateBranch,
   gitDiff,
+  gitDiffAll,
   gitDiscard,
   gitFetch,
   gitLog,
   gitPull,
   gitPush,
+  gitShow,
   gitStage,
   gitStageAll,
   gitStatus,
@@ -44,6 +47,7 @@ import {
   type GitLogEntry,
   type GitStatusEntry,
 } from '@/lib/tauri'
+import { extractCode, streamAction } from '@/lib/ai-client'
 
 const MonacoDiff = dynamic(() => import('@monaco-editor/react').then((m) => m.DiffEditor), {
   ssr: false,
@@ -57,6 +61,20 @@ type Change = {
   staged: boolean
   untracked: boolean
 }
+function joinAbs(root: string, rel: string): string {
+  const sep = root.includes('\\') ? '\\' : '/'
+  return root.replace(/[\\/]+$/, '') + sep + rel.replace(/\//g, sep)
+}
+function langOf(path: string): string {
+  const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
+  const m: Record<string, string> = {
+    ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
+    json: 'json', md: 'markdown', css: 'css', html: 'html', rs: 'rust',
+    py: 'python', go: 'go', sh: 'shell', yml: 'yaml', yaml: 'yaml', sql: 'sql',
+  }
+  return m[ext] ?? 'plaintext'
+}
+
 function parse(entries: GitStatusEntry[]): Change[] {
   return entries.map((e) => {
     const raw = (e.status + '  ').slice(0, 2)
@@ -91,7 +109,18 @@ function labelOf(c: Change): { letter: string; color: string; title: string } {
   }
 }
 
-export function GitPanel({ root, onOpenFile }: { root: string; onOpenFile: (p: string) => void }) {
+type AiReview = { text: string; running: boolean } | null
+
+export function GitPanel({
+  root,
+  onOpenFile,
+  onOpenAiReview,
+}: {
+  root: string
+  onOpenFile: (p: string) => void
+  /** Опциональный колбэк — если задан, ревью открывается в AI-панели вместо inline. */
+  onOpenAiReview?: (diff: string) => void
+}) {
   const [tab, setTab] = useState<'changes' | 'history' | 'branches'>('changes')
   const [changes, setChanges] = useState<Change[]>([])
   const [branch, setBranch] = useState<GitBranchInfo | null>(null)
@@ -102,7 +131,9 @@ export function GitPanel({ root, onOpenFile }: { root: string; onOpenFile: (p: s
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
-  const [diffText, setDiffText] = useState<{ before: string; after: string; path: string } | null>(null)
+  const [diffText, setDiffText] = useState<{ before: string; after: string; path: string; language: string } | null>(null)
+  const [aiReview, setAiReview] = useState<AiReview>(null)
+  const [genMsgBusy, setGenMsgBusy] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -144,19 +175,76 @@ export function GitPanel({ root, onOpenFile }: { root: string; onOpenFile: (p: s
   const openDiff = useCallback(
     async (c: Change) => {
       setSelected(c.path)
+      // Полноценный diff «HEAD:file  vs  worktree» через Monaco DiffEditor.
+      // Оригинал берём git-плюмбингом (git show), правую сторону — с диска.
+      // Файл, которого не было в HEAD (untracked / A), git show вернёт пустым.
       try {
-        // Показываем текущее рабочее состояние vs HEAD — самый полезный дифф.
-        const patch = await gitDiff(root, c.path, false).catch(() => '')
-        // Для наглядности показываем сам patch как «после», а «до» — пустой:
-        // Monaco DiffEditor лучше работает на полных содержимых, но получить
-        // предыдущую версию без git-плюмбинга дороже — показываем raw patch.
-        setDiffText({ before: '', after: patch || '(нет изменений)', path: c.path })
+        const [before, after] = await Promise.all([
+          c.untracked ? Promise.resolve('') : gitShow(root, c.path).catch(() => ''),
+          fsRead(joinAbs(root, c.path)).catch(() => ''),
+        ])
+        setDiffText({ before, after, path: c.path, language: langOf(c.path) })
       } catch {
-        setDiffText({ before: '', after: '(diff недоступен)', path: c.path })
+        setDiffText({ before: '', after: '', path: c.path, language: 'plaintext' })
       }
     },
     [root],
   )
+
+  const doAiReview = useCallback(async () => {
+    setAiReview({ text: '', running: true })
+    try {
+      const [ws, staged] = await Promise.all([gitDiffAll(root, false), gitDiffAll(root, true)])
+      const diff = [staged, ws].filter(Boolean).join('\n')
+      if (!diff.trim()) {
+        setAiReview({ text: 'Изменений нет — ревьюить нечего.', running: false })
+        return
+      }
+      if (onOpenAiReview) {
+        onOpenAiReview(diff)
+        setAiReview(null)
+        return
+      }
+      let acc = ''
+      await streamAction({
+        action: 'diff-review',
+        input: diff,
+        onChunk: (piece) => {
+          acc += piece
+          setAiReview({ text: acc, running: true })
+        },
+      })
+      setAiReview({ text: acc, running: false })
+    } catch (e) {
+      setAiReview({ text: `Ошибка: ${(e as Error).message}`, running: false })
+    }
+  }, [root, onOpenAiReview])
+
+  const genCommitMessage = useCallback(async () => {
+    setGenMsgBusy(true)
+    try {
+      const [ws, staged] = await Promise.all([gitDiffAll(root, false), gitDiffAll(root, true)])
+      const diff = staged || ws
+      if (!diff.trim()) {
+        setError('Нет изменений для генерации сообщения')
+        return
+      }
+      let acc = ''
+      await streamAction({
+        action: 'commit-message',
+        input: diff,
+        onChunk: (piece) => {
+          acc += piece
+          setMessage(extractCode(acc))
+        },
+      })
+      setMessage(extractCode(acc))
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setGenMsgBusy(false)
+    }
+  }, [root])
 
   const staged = useMemo(() => changes.filter((c) => c.staged), [changes])
   const unstaged = useMemo(() => changes.filter((c) => !c.staged), [changes])
@@ -264,12 +352,41 @@ export function GitPanel({ root, onOpenFile }: { root: string; onOpenFile: (p: s
                 </button>
                 <button
                   type="button"
+                  onClick={() => void genCommitMessage()}
+                  disabled={genMsgBusy || !changes.length}
+                  className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-40"
+                  title="Сгенерировать сообщение коммита через AI"
+                >
+                  {genMsgBusy ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <Sparkles className="size-3 text-amber-400" />
+                  )}
+                  AI
+                </button>
+                <button
+                  type="button"
                   onClick={() => withBusy('stageAll', () => gitStageAll(root))}
                   disabled={!unstaged.length || !!busy}
                   className="rounded border border-border px-2 py-1 text-[11px] hover:bg-accent disabled:opacity-40"
                   title="Stage all"
                 >
                   Stage All
+                </button>
+              </div>
+              <div className="mt-1">
+                <button
+                  type="button"
+                  onClick={() => void doAiReview()}
+                  disabled={!changes.length || aiReview?.running}
+                  className="flex w-full items-center justify-center gap-1 rounded border border-border py-1 text-[11px] hover:bg-accent disabled:opacity-40"
+                >
+                  {aiReview?.running ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <Sparkles className="size-3 text-amber-400" />
+                  )}
+                  AI Review всех изменений
                 </button>
               </div>
             </div>
@@ -313,22 +430,50 @@ export function GitPanel({ root, onOpenFile }: { root: string; onOpenFile: (p: s
               />
               {diffText && (
                 <div className="border-t border-border">
-                  <div className="border-b border-border bg-muted/50 px-3 py-1 text-[11px] text-muted-foreground">
-                    diff · {diffText.path}
+                  <div className="flex items-center gap-2 border-b border-border bg-muted/50 px-3 py-1 text-[11px] text-muted-foreground">
+                    <span className="truncate">diff · {diffText.path}</span>
+                    <button
+                      type="button"
+                      onClick={() => setDiffText(null)}
+                      className="ml-auto rounded p-0.5 hover:bg-accent"
+                      title="Скрыть diff"
+                    >
+                      ×
+                    </button>
                   </div>
-                  <div className="h-64">
+                  <div className="h-72">
                     <MonacoDiff
                       original={diffText.before}
                       modified={diffText.after}
-                      language="diff"
+                      language={diffText.language}
                       theme="vs-dark"
                       options={{
                         readOnly: true,
-                        renderSideBySide: false,
+                        renderSideBySide: true,
                         minimap: { enabled: false },
                         fontSize: 12,
+                        automaticLayout: true,
                       }}
                     />
+                  </div>
+                </div>
+              )}
+              {aiReview && (
+                <div className="border-t border-border bg-muted/30 p-2 text-[11px] leading-5">
+                  <div className="mb-1 flex items-center gap-2 text-muted-foreground">
+                    <Sparkles className="size-3 text-amber-400" />
+                    <span>AI Review</span>
+                    {aiReview.running && <Loader2 className="size-3 animate-spin" />}
+                    <button
+                      type="button"
+                      onClick={() => setAiReview(null)}
+                      className="ml-auto rounded p-0.5 hover:bg-accent"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <div className="max-h-64 overflow-y-auto whitespace-pre-wrap font-mono text-[11px] text-foreground/90">
+                    {aiReview.text || 'думаем…'}
                   </div>
                 </div>
               )}

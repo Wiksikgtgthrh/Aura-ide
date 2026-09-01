@@ -16,6 +16,12 @@ export type WorkspaceSettings = {
     insertSpaces?: boolean
     wordWrap?: 'on' | 'off'
     fontSize?: number
+    /** Одна из зарегистрированных Monaco-тем. */
+    theme?: 'aura-dark' | 'aura-light' | 'vs-dark' | 'vs' | 'hc-black'
+  }
+  ai?: {
+    /** Ghost text при вводе (Copilot-подобный). Default: включено. */
+    inlineCompletions?: boolean
   }
   format?: {
     /** Запускать форматтер по Ctrl+S. */
