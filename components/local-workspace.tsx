@@ -70,6 +70,15 @@ import { loadWorkspaceSettings, saveWorkspaceSettings, type WorkspaceSettings } 
 import { runFormatter, shouldFormat } from '@/lib/format-on-save'
 import { primeMonacoTsProject, registerAuraThemes, registerMonacoAi } from '@/lib/monaco-ai'
 import { termRun } from '@/lib/tauri'
+import { LspClient } from '@/lib/lsp-client'
+import { bridgeMonacoToLsp } from '@/lib/monaco-lsp-bridge'
+import {
+  loadUserIdePlugins,
+  makeBaseCtx,
+  type CompiledPlugins,
+  type PluginCtx,
+} from '@/lib/plugin-runtime'
+import * as LucideIcons from 'lucide-react'
 
 const MonacoEditor = dynamic(() => import('@monaco-editor/react'), {
   ssr: false,
@@ -130,6 +139,71 @@ type BottomTab = 'terminal' | 'problems'
 type LeftTab = 'files' | 'search' | 'git' | 'outline'
 type ThemeName = 'aura-dark' | 'vs-dark' | 'vs' | 'hc-black' | 'aura-light'
 
+// pickLucideIcon — по строке из манифеста ('Puzzle', 'GitBranch', ...)
+// достаём иконку из lucide-react. Названия нечувствительны к регистру.
+function pickLucideIcon(name?: string): any {
+  if (!name) return null
+  const key = name.charAt(0).toUpperCase() + name.slice(1)
+  const set = LucideIcons as unknown as Record<string, any>
+  return set[key] ?? set[name] ?? null
+}
+
+// --- Plugin inline completions provider -------------------------------------
+// Регистрируется РАЗ — тянет живые провайдеры из ref, чтобы не пере-mount'ить
+// Monaco при каждом обновлении списка плагинов.
+function registerPluginCompletions(
+  monaco: any,
+  pluginsRef: React.MutableRefObject<CompiledPlugins>,
+  makeCtx: () => PluginCtx,
+) {
+  monaco.languages.registerInlineCompletionsProvider(['*'], {
+    freeInlineCompletions: () => {},
+    provideInlineCompletions: async (model: any, position: any) => {
+      const providers = pluginsRef.current.completions
+      if (!providers.length) return { items: [] }
+      const language = model.getLanguageId?.() ?? 'plaintext'
+      const active = providers.filter(
+        (p) => p.languages.includes('*') || p.languages.includes(language),
+      )
+      if (!active.length) return { items: [] }
+      const path = model.uri?.fsPath ?? ''
+      const start = Math.max(1, position.lineNumber - 30)
+      const endLine = Math.min(model.getLineCount(), position.lineNumber + 30)
+      const prefix = model.getValueInRange(
+        new monaco.Range(start, 1, position.lineNumber, position.column),
+      )
+      const suffix = model.getValueInRange(
+        new monaco.Range(position.lineNumber, position.column, endLine, model.getLineMaxColumn(endLine)),
+      )
+      const base = makeCtx()
+      // Первый плагин, вернувший непустое, выигрывает — как в Copilot.
+      for (const p of active) {
+        try {
+          const text = await p.provide({ ...base, prefix, suffix, language, path })
+          if (typeof text === 'string' && text.length) {
+            return {
+              items: [
+                {
+                  insertText: text,
+                  range: new monaco.Range(
+                    position.lineNumber,
+                    position.column,
+                    position.lineNumber,
+                    position.column,
+                  ),
+                },
+              ],
+            }
+          }
+        } catch {
+          /* пропускаем ошибочный плагин, идём к следующему */
+        }
+      }
+      return { items: [] }
+    },
+  })
+}
+
 export function LocalWorkspace({ root, onClose }: { root: string; onClose: () => void }) {
   // --- Основное состояние ---------------------------------------------------
   const [tree, setTree] = useState<FsNode[]>([])
@@ -170,6 +244,20 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
   // AI-попап в терминале (Ctrl+K над PTY).
   const [aiTermOpen, setAiTermOpen] = useState(false)
   const ptyRef = useRef<PtyTerminalHandle>(null)
+
+  // Плагины IDE.
+  const [plugins, setPlugins] = useState<CompiledPlugins>({
+    toolbarButtons: [],
+    paletteCommands: [],
+    completions: [],
+  })
+  const [notice, setNotice] = useState<{ text: string; kind: 'info' | 'warn' | 'error' } | null>(null)
+
+  // LSP.
+  const lspClientRef = useRef<LspClient | null>(null)
+  const lspDisposerRef = useRef<(() => void) | null>(null)
+  const [lspStatus, setLspStatus] = useState<'off' | 'starting' | 'ready' | 'error'>('off')
+  const [lspError, setLspError] = useState<string | null>(null)
 
   // Refs — избегаем стейл-клоужеров в кнопках/шорткатах
   const contentRef = useRef(content)
@@ -244,6 +332,19 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
       if (t) setThemeName(t)
     })()
   }, [root])
+
+  // Загрузить плагины пользователя (server action). Не блокирует IDE.
+  useEffect(() => {
+    let cancelled = false
+    loadUserIdePlugins()
+      .then((p) => {
+        if (!cancelled) setPlugins(p)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Восстановить сессию: раскрытые папки + табы + активный файл.
   const restoredRef = useRef(false)
@@ -388,6 +489,25 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
   // --- Список файлов для Quick Open ----------------------------------------
   const allFiles = useMemo(() => flattenFiles(tree), [tree])
 
+  // Общий контекст для плагинов. Строим лениво, чтобы всегда видеть
+  // самое свежее состояние (активный файл, буфер).
+  const makePluginCtx = useCallback((): PluginCtx => {
+    return makeBaseCtx(root, {
+      openFile: (p, line, column) => void openFileByPath(p, line, column),
+      showMessage: (text, kind = 'info') => setNotice({ text, kind }),
+      getActiveFile: () => activeRef.current,
+      getActiveText: () => contentRef.current,
+      setActiveText: (text) => {
+        const f = activeRef.current
+        if (!f) return
+        setContent(text)
+        setContents((prev) => new Map(prev).set(f, text))
+        setDirty((s) => new Set(s).add(f))
+      },
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [root])
+
   // Обёртка для action-провайдера Monaco: открывает AI-панель с preset'ом.
   const runAiAction = useCallback(
     (payload: { action: any; code: string; language: string; path?: string }) => {
@@ -403,7 +523,8 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
     [],
   )
 
-  // При появлении Monaco: темы, AI-провайдеры, TS-IntelliSense.
+  // При появлении Monaco: темы, AI-провайдеры, TS-IntelliSense, LSP,
+  // plugin-completions.
   const primeMonaco = useCallback(
     async (monaco: any) => {
       monacoInstance.current = monaco
@@ -412,13 +533,16 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
       } catch {
         /* ignore */
       }
-      // Inline completions + code actions. Enabled — из settings.
+      // AI inline completions + code actions.
       registerMonacoAi(monaco, {
         isInlineEnabled: () =>
           (settingsRef.current as any)?.ai?.inlineCompletions !== false,
         onRunAction: runAiAction,
       })
-      // TS проектные типы — только для проектов с package.json/tsconfig.
+      // Plugin-completions — свой inlineCompletionsProvider поверх ['*'].
+      registerPluginCompletions(monaco, pluginsRef, makePluginCtx)
+      // TS проектные типы через lightweight extraLibs — работает всегда,
+      // даже без внешнего LSP.
       try {
         await primeMonacoTsProject(
           monaco,
@@ -429,9 +553,44 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
       } catch {
         /* тихо */
       }
+      // Полноценный LSP (typescript-language-server) — по флагу в settings.
+      const lspEnabled = (settingsRef.current as any)?.lsp?.enabled === true
+      if (lspEnabled && isDesktop() && !lspClientRef.current) {
+        setLspStatus('starting')
+        try {
+          const client = new LspClient(root)
+          lspClientRef.current = client
+          await client.start((settingsRef.current as any)?.lsp?.command)
+          lspDisposerRef.current = bridgeMonacoToLsp(monaco, client)
+          setLspStatus('ready')
+        } catch (e) {
+          setLspStatus('error')
+          setLspError((e as Error).message)
+          lspClientRef.current = null
+        }
+      }
     },
-    [root, runAiAction],
+    [root, runAiAction, makePluginCtx],
   )
+
+  // Держим свежий список плагинов в ref — Monaco инициализируется раньше,
+  // чем данные плагинов доедут.
+  const pluginsRef = useRef<CompiledPlugins>({
+    toolbarButtons: [],
+    paletteCommands: [],
+    completions: [],
+  })
+  pluginsRef.current = plugins
+
+  // Выключение LSP при размонтировании / смене проекта.
+  useEffect(() => {
+    return () => {
+      lspDisposerRef.current?.()
+      lspDisposerRef.current = null
+      lspClientRef.current?.shutdown().catch(() => {})
+      lspClientRef.current = null
+    }
+  }, [root])
 
   const allFilesRef = useRef<string[]>([])
   allFilesRef.current = allFiles
@@ -556,8 +715,22 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
           void termRun(`task-${i}-${Date.now()}`, root, t.command).catch(() => {})
         },
       })),
+      // Плагин-команды — добавляются в палитру с префиксом slug.
+      ...plugins.paletteCommands.map((c) => ({
+        id: `plugin-${c.pluginSlug}-${c.id}`,
+        title: c.title,
+        hint: c.hint,
+        keywords: `${c.keywords ?? ''} plugin ${c.pluginSlug}`,
+        run: () => {
+          try {
+            c.run(makePluginCtx())
+          } catch (e) {
+            setNotice({ text: `Плагин ${c.pluginSlug}: ${(e as Error).message}`, kind: 'error' })
+          }
+        },
+      })),
     ],
-    [refresh, save, onClose, activeFile, settings, root],
+    [refresh, save, onClose, activeFile, settings, root, plugins, makePluginCtx],
   )
 
   // --- Глобальные шорткаты --------------------------------------------------
@@ -636,6 +809,52 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
         <span className="truncate text-sm font-medium">{folderLabel}</span>
         <span className="truncate text-xs text-muted-foreground">{root}</span>
         <div className="ml-auto flex items-center gap-1">
+          {lspStatus !== 'off' && (
+            <span
+              title={
+                lspStatus === 'ready'
+                  ? 'LSP: typescript-language-server готов'
+                  : lspStatus === 'starting'
+                    ? 'LSP: запуск…'
+                    : `LSP ошибка: ${lspError ?? '—'}`
+              }
+              className={`rounded px-1.5 py-0.5 text-[10px] ${
+                lspStatus === 'ready'
+                  ? 'bg-emerald-500/10 text-emerald-400'
+                  : lspStatus === 'starting'
+                    ? 'bg-amber-500/10 text-amber-400'
+                    : 'bg-red-500/10 text-red-400'
+              }`}
+            >
+              LSP {lspStatus === 'ready' ? '✓' : lspStatus === 'starting' ? '…' : '×'}
+            </span>
+          )}
+          {/* Плагин-кнопки в тулбаре */}
+          {plugins.toolbarButtons.map((b) => {
+            const Icon = pickLucideIcon(b.icon)
+            return (
+              <Button
+                key={`${b.pluginSlug}-${b.id}`}
+                variant="ghost"
+                size="icon"
+                className="size-7"
+                title={`${b.title} (${b.pluginSlug})`}
+                onClick={() => {
+                  try {
+                    b.run(makePluginCtx())
+                  } catch (e) {
+                    setNotice({ text: `Плагин ${b.pluginSlug}: ${(e as Error).message}`, kind: 'error' })
+                  }
+                }}
+              >
+                {Icon ? (
+                  <Icon className="size-3.5" />
+                ) : (
+                  <span className="text-[10px] font-semibold">{b.title[0]?.toUpperCase() ?? '?'}</span>
+                )}
+              </Button>
+            )
+          })}
           <Button
             variant="ghost"
             size="icon"
@@ -906,7 +1125,27 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
           )}
 
           {/* Редактор + split */}
-          <div className="flex min-h-0 flex-1">
+      {notice && (
+        <div
+          className={`flex items-center gap-2 border-b border-border px-3 py-1 text-xs ${
+            notice.kind === 'error'
+              ? 'bg-red-500/10 text-red-400'
+              : notice.kind === 'warn'
+                ? 'bg-amber-500/10 text-amber-300'
+                : 'bg-emerald-500/10 text-emerald-300'
+          }`}
+        >
+          <span className="truncate">{notice.text}</span>
+          <button
+            type="button"
+            onClick={() => setNotice(null)}
+            className="ml-auto rounded p-0.5 hover:bg-accent"
+          >
+            <X className="size-3" />
+          </button>
+        </div>
+      )}
+      <div className="flex min-h-0 flex-1">
             <div className="min-h-0 min-w-0 flex-1">
               {activeFile ? (
                 <MonacoEditor
@@ -1233,6 +1472,38 @@ function SettingsDialog({
               Использует ваш активный API-ключ; каждая пауза при вводе — короткий
               non-streaming запрос.
             </p>
+          </div>
+          <div className="rounded border border-border p-3">
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={(s as any).lsp?.enabled === true}
+                onChange={(e) =>
+                  setS((v) => ({
+                    ...v,
+                    lsp: { ...(v as any).lsp, enabled: e.target.checked },
+                  }))
+                }
+              />
+              Полноценный TypeScript LSP (typescript-language-server)
+            </label>
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              Даёт Find All References, Rename Symbol и точные диагностики
+              всего проекта. Требует установленного сервера:{' '}
+              <code className="rounded bg-muted px-1 py-0.5">npm i -g typescript typescript-language-server</code>.
+              После включения — переоткройте папку.
+            </p>
+            <input
+              value={(s as any).lsp?.command ?? ''}
+              onChange={(e) =>
+                setS((v) => ({
+                  ...v,
+                  lsp: { ...(v as any).lsp, command: e.target.value },
+                }))
+              }
+              placeholder="кастомная команда (по умолчанию: typescript-language-server)"
+              className="mt-2 h-8 w-full rounded border border-border bg-background px-2 text-[11px] outline-none"
+            />
           </div>
           <div className="rounded border border-border p-3">
             <label className="flex items-center gap-2 text-xs">

@@ -85,6 +85,41 @@ export async function ptyClose(id: string) {
   return invoke<void>('pty_close', { id })
 }
 
+// --- LSP-прокси -------------------------------------------------------------
+
+export type LspOutbound = {
+  id: string
+  message: string
+  exited: boolean
+  exit_code: number | null
+}
+
+export async function onLsp(id: string, cb: (ev: LspOutbound) => void) {
+  return listenNative<LspOutbound>(`lsp://${id}`, cb)
+}
+export async function lspStart(args: {
+  id: string
+  cwd: string
+  command?: string
+  args?: string[]
+}) {
+  return invoke<void>('lsp_start', {
+    args: {
+      id: args.id,
+      cwd: args.cwd,
+      command: args.command ?? null,
+      args: args.args ?? null,
+    },
+  })
+}
+/** message — уже сериализованный JSON-RPC. */
+export async function lspSend(id: string, message: string) {
+  return invoke<void>('lsp_send', { id, message })
+}
+export async function lspStop(id: string) {
+  return invoke<void>('lsp_stop', { id })
+}
+
 // --- Файловая система -------------------------------------------------------
 
 export type FsNode = { name: string; path: string; is_dir: boolean; children: FsNode[] }

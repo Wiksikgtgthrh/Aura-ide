@@ -25,6 +25,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command as TokioCommand;
 
 mod git;
+mod lsp;
 mod pty;
 mod search;
 mod watcher;
@@ -736,6 +737,7 @@ pub fn run() {
         })
         .manage(watcher::WatcherState::default())
         .manage(pty::PtyState::default())
+        .manage(lsp::LspState::default())
         .invoke_handler(tauri::generate_handler![
             term_run,
             term_kill,
@@ -780,6 +782,10 @@ pub fn run() {
             pty::pty_write,
             pty::pty_resize,
             pty::pty_close,
+            // LSP-прокси (typescript-language-server и т.п.)
+            lsp::lsp_start,
+            lsp::lsp_send,
+            lsp::lsp_stop,
         ])
         .build(tauri::generate_context!())
         .expect("ошибка запуска Aura IDE");

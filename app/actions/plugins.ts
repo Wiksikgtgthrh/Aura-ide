@@ -8,6 +8,7 @@ import { getSession } from '@/lib/session'
 import {
   sanitizeAuthors,
   sanitizeMedia,
+  type IdeManifest,
   type PluginAuthor,
   type PluginMediaItem,
   type PluginVersionEntry,
@@ -22,6 +23,8 @@ export type PluginManifest = {
   docs?: string
   changelog?: { version: string; date: string; notes: string }[]
   recommendations?: string[]
+  /** Расширения самой IDE — кнопки, палитра, completions. */
+  ide?: IdeManifest
 }
 
 export type Plugin = {

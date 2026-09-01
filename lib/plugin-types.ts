@@ -24,6 +24,86 @@ export type PluginVersionEntry = {
   createdAt: string
 }
 
+// ---------------------------------------------------------------------------
+// IDE-манифест: как плагин расширяет саму IDE (кнопки, команды, completions).
+// Живёт в `plugins.manifest.ide` — обычный JSON, никаких выполняемых
+// зависимостей, всё оценивается в frontend-песочнице (Function-конструктор
+// с явным API-объектом; никакого доступа к window/document напрямую).
+// ---------------------------------------------------------------------------
+
+/** Одна кнопка в верхнем тулбаре IDE. */
+export type IdeToolbarButton = {
+  id: string
+  title: string
+  /** Название иконки из lucide-react. Если не найдено — рисуем букву. */
+  icon?: string
+  /** Тело функции, вызывается как new Function('ctx', body). */
+  onClick: string
+}
+
+/** Команда в Command Palette (Ctrl+Shift+P). */
+export type IdePaletteCommand = {
+  id: string
+  title: string
+  hint?: string
+  keywords?: string
+  /** Тело функции — `ctx` содержит openFile/showMessage/getActiveFile/... */
+  run: string
+}
+
+/** Провайдер inline completions (ghost text). */
+export type IdeCompletionProvider = {
+  id: string
+  /** Языки Monaco: ['typescript','javascript',...] или ['*']. */
+  languages: string[]
+  /** Тело async-функции, `ctx` содержит prefix/suffix/language/path. */
+  provide: string
+}
+
+export type IdeManifest = {
+  toolbarButtons?: IdeToolbarButton[]
+  paletteCommands?: IdePaletteCommand[]
+  completions?: IdeCompletionProvider[]
+}
+
+/** Санитизация: обрезаем строки, убираем всё, что не строка/массив. */
+export function sanitizeIdeManifest(input: unknown): IdeManifest {
+  const src = (input ?? {}) as Record<string, unknown>
+  const out: IdeManifest = {}
+  const asArr = <T,>(x: unknown, map: (o: any) => T | null, cap = 20): T[] =>
+    Array.isArray(x)
+      ? x
+          .map(map)
+          .filter((v): v is T => v != null)
+          .slice(0, cap)
+      : []
+  const trim = (s: unknown, cap = 200) => String(s ?? '').trim().slice(0, cap)
+  out.toolbarButtons = asArr(src.toolbarButtons, (o) => {
+    const id = trim(o?.id, 60)
+    const title = trim(o?.title, 80)
+    const onClick = trim(o?.onClick, 4000)
+    if (!id || !title || !onClick) return null
+    return { id, title, icon: trim(o?.icon, 40), onClick }
+  })
+  out.paletteCommands = asArr(src.paletteCommands, (o) => {
+    const id = trim(o?.id, 60)
+    const title = trim(o?.title, 120)
+    const run = trim(o?.run, 4000)
+    if (!id || !title || !run) return null
+    return { id, title, hint: trim(o?.hint, 30), keywords: trim(o?.keywords, 200), run }
+  })
+  out.completions = asArr(src.completions, (o) => {
+    const id = trim(o?.id, 60)
+    const provide = trim(o?.provide, 4000)
+    if (!id || !provide) return null
+    const langs = Array.isArray(o?.languages)
+      ? (o.languages as unknown[]).map((l) => trim(l, 30)).filter(Boolean).slice(0, 10)
+      : ['*']
+    return { id, languages: langs, provide }
+  })
+  return out
+}
+
 /** Санитизация списка авторов из формы/БД (обрезка, лимиты, отбрасывание пустых). */
 export function sanitizeAuthors(input: unknown): PluginAuthor[] {
   if (!Array.isArray(input)) return []

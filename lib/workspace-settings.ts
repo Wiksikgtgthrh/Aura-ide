@@ -23,6 +23,12 @@ export type WorkspaceSettings = {
     /** Ghost text при вводе (Copilot-подобный). Default: включено. */
     inlineCompletions?: boolean
   }
+  lsp?: {
+    /** Настоящий typescript-language-server для TS/JS (нужен `npm i -g …`). */
+    enabled?: boolean
+    /** Кастомная команда, если по имени не находится. */
+    command?: string
+  }
   format?: {
     /** Запускать форматтер по Ctrl+S. */
     onSave?: boolean

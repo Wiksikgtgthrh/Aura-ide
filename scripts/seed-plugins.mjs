@@ -122,6 +122,82 @@ const PLUGINS = [
       recommendations: ['clean-tailwind-v4'],
     },
   },
+  // ---------- IDE-плагины (расширяют саму IDE через manifest.ide) ----------
+  {
+    slug: 'todo-tracker',
+    name: 'TODO Tracker',
+    description: 'Показывает все TODO/FIXME из активного файла кнопкой в тулбаре и командой в палитре.',
+    author: 'Aura Team',
+    version: '1.0.0',
+    type: 'utility',
+    scope: 'ide-component',
+    icon: 'ListChecks',
+    manifest: {
+      ide: {
+        toolbarButtons: [
+          {
+            id: 'find-todos',
+            title: 'Найти TODO в файле',
+            icon: 'ListChecks',
+            onClick: [
+              "const text = ctx.getActiveText();",
+              "if (!text) { ctx.showMessage('Нет открытого файла', 'warn'); return; }",
+              "const re = /(TODO|FIXME|HACK|XXX)[:\\s]([^\\n]*)/gi;",
+              "let m, out = [], i = 0;",
+              "while ((m = re.exec(text)) && i++ < 200) {",
+              "  const line = text.slice(0, m.index).split('\\n').length;",
+              "  out.push(line + ':  ' + m[1].toUpperCase() + ' ' + m[2].trim());",
+              "}",
+              "ctx.showMessage(out.length ? ('Найдено ' + out.length + ': ' + out.slice(0,5).join(' · ')) : 'TODO не найдено', out.length ? 'info' : 'warn');",
+            ].join('\n'),
+          },
+        ],
+        paletteCommands: [
+          {
+            id: 'find-todos-cmd',
+            title: 'TODO: список в активном файле',
+            keywords: 'todo fixme hack',
+            run: "const t = ctx.getActiveText(); const re=/(TODO|FIXME|HACK)[:\\s]([^\\n]*)/gi; const out=[]; let m; while((m=re.exec(t))&&out.length<50){ const line=t.slice(0,m.index).split('\\n').length; out.push(line+': '+m[0]); } ctx.showMessage(out.join(' | ') || 'Ничего не найдено');",
+          },
+        ],
+      },
+    },
+  },
+  {
+    slug: 'react-snippets',
+    name: 'React Snippets',
+    description: 'Ghost text: набираешь «rfc» — плагин предлагает полный шаблон React-компонента. Пример как писать свои inline-completions.',
+    author: 'Aura Team',
+    version: '1.0.0',
+    type: 'utility',
+    scope: 'ide-component',
+    icon: 'Sparkles',
+    manifest: {
+      ide: {
+        completions: [
+          {
+            id: 'rfc-snippet',
+            languages: ['typescriptreact', 'javascriptreact', 'typescript', 'javascript'],
+            provide: [
+              "const line = ctx.prefix.split('\\n').pop() || '';",
+              "if (!/\\brfc$/.test(line.trim())) return null;",
+              "const name = (ctx.path.split(/[\\\\/]/).pop() || 'Component').replace(/\\.[jt]sx?$/, '').replace(/[^A-Za-z0-9]/g, '');",
+              "return [",
+              "  '',",
+              "  'export function ' + (name || 'Component') + '() {',",
+              "  '  return (',",
+              "  '    <div>',",
+              "  '      hello',",
+              "  '    </div>',",
+              "  '  );',",
+              "  '}',",
+              "].join('\\n');",
+            ].join('\n'),
+          },
+        ],
+      },
+    },
+  },
   // Примечание: плагин «V0 Farm» (slug: 'v0-farm') наполняется отдельным
   // скриптом `pnpm seed:farm` (scripts/seed-farm.mjs) — он помимо записи в
   // plugins добавляет модели v0 в farm_models. Не дублируем его здесь.
