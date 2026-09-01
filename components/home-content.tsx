@@ -9,6 +9,8 @@ import { PromptBox, type PromptBoxSubmitPayload } from '@/components/prompt-box'
 import { createChat } from '@/app/actions/chats'
 import { useLanguage } from '@/lib/language'
 import { OpenFolderButton, LocalWorkspace } from '@/components/local-workspace'
+import { loadRecent, loadSession, pushRecent } from '@/lib/session-store'
+import { FolderOpen } from 'lucide-react'
 
 // Loaded only on the client to avoid hydration mismatch caused by
 // SWR + language context differing between SSR and first client render.
@@ -25,6 +27,24 @@ export function HomeContent() {
   // Открытая локальная папка (desktop «Open Folder» как в VS Code).
   // null — обычная главная с промптом; path — workspace поверх неё.
   const [folder, setFolder] = useState<string | null>(null)
+  const [recent, setRecent] = useState<string[]>([])
+
+  // Восстанавливаем последний открытый проект и список Recent.
+  useEffect(() => {
+    setRecent(loadRecent())
+    const s = loadSession()
+    if (s?.root) {
+      // Не подставляем автоматически — только показываем как первый в Recent,
+      // чтобы пользователь сам решил, продолжить или нет.
+      setRecent((r) => (r.includes(s.root) ? r : [s.root, ...r]))
+    }
+  }, [])
+
+  const openFolder = (path: string) => {
+    pushRecent(path)
+    setRecent((r) => [path, ...r.filter((x) => x !== path)].slice(0, 12))
+    setFolder(path)
+  }
 
   // HomeContent is mounted permanently inside an <Activity> shell, so it is
   // NEVER unmounted when navigating away to a chat. That means `creating`
@@ -104,8 +124,28 @@ export function HomeContent() {
       </h1>
       <PromptBox onSubmit={handleSubmit} busy={creating} />
       <SuggestionChips onSelect={handleSuggestion} disabled={creating} />
-      <div className="mt-6">
-        <OpenFolderButton onOpen={setFolder} />
+      <div className="mt-6 flex w-full max-w-md flex-col items-center gap-3">
+        <OpenFolderButton onOpen={openFolder} />
+        {recent.length > 0 && (
+          <div className="w-full">
+            <div className="mb-1 px-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+              Недавние проекты
+            </div>
+            <div className="max-h-40 overflow-y-auto rounded-md border border-border bg-muted/30">
+              {recent.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => openFolder(p)}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  <FolderOpen className="size-3 shrink-0" />
+                  <span className="truncate">{p}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </main>
   )

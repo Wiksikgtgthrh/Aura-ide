@@ -1,31 +1,43 @@
 'use client'
 
 /**
- * Локальный workspace — «Open Folder» как в VS Code.
+ * Локальный workspace — «Open Folder» как в VS Code, максимально доделанный.
  *
- * Открывает реальную папку с диска (нативный диалог Tauri), показывает
- * дерево файлов, Monaco-редактор с автосохранением и терминал, работающий
- * в этой папке. Всё через нативное Rust-ядро — без Postgres и Docker.
- *
- * В браузере (не desktop) кнопка не рендерится — см. home-content.tsx.
+ * Что тут теперь есть:
+ *   • файловое дерево с иконками, контекстным меню, inline-rename, F2/Del,
+ *     drag/copy/cut/paste, реагирует на file-system watcher;
+ *   • сплит-редактор (Monaco), Ctrl+S, Ctrl+W, Ctrl+P (Quick Open),
+ *     Ctrl+Shift+P (Command Palette), Ctrl+Shift+F (Global Search),
+ *     Ctrl+`, Ctrl+B (левый сайдбар), Ctrl+J (нижняя панель), Ctrl+Alt+A (AI);
+ *   • Breadcrumbs над редактором;
+ *   • PTY-терминал (xterm.js) вместо одноразовых команд;
+ *   • панель Git (изменения, diff, коммит, push/pull/fetch, лог, ветки);
+ *   • Live Preview (dev-сервер в iframe);
+ *   • панель Problems (маркеры Monaco);
+ *   • AI-панель справа (iframe на /chat/[id]);
+ *   • сохранение сессии (последний проект, табы, раскрытые папки);
+ *   • workspace settings (.aura/settings.json) + format-on-save.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
 import {
-  ChevronDown,
-  ChevronRight,
-  FilePlus2,
-  FileText,
-  FolderClosed,
+  Bot,
+  Command as CommandIcon,
   FolderOpen,
-  FolderPlus,
   GitBranch,
   Loader2,
+  MonitorSmartphone,
+  PanelBottom,
+  PanelLeft,
+  PanelRight,
+  Play,
   RefreshCw,
-  Save,
+  Search,
+  Settings,
   SquareTerminal,
   X,
+  Split as SplitIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -34,15 +46,26 @@ import {
   fsTree,
   fsRead,
   fsWrite,
-  fsCreateFile,
-  fsCreateDir,
-  fsDelete,
   gitStatus,
-  termRun,
-  onTermOutput,
+  onFsChanged,
+  fsWatchStart,
+  fsWatchStop,
   type FsNode,
   type GitStatusEntry,
 } from '@/lib/tauri'
+import { iconForFile } from '@/lib/file-icons'
+import { FileTree } from '@/components/workspace/file-tree'
+import { CommandPalette, type PaletteCommand } from '@/components/workspace/command-palette'
+import { GlobalSearchPanel } from '@/components/workspace/global-search'
+import { PtyTerminal } from '@/components/workspace/pty-terminal'
+import { GitPanel } from '@/components/workspace/git-panel'
+import { PreviewPanel } from '@/components/workspace/preview-panel'
+import { AiSidePanel } from '@/components/workspace/ai-side-panel'
+import { ProblemsPanel, subscribeMonacoMarkers, type ProblemsMarker } from '@/components/workspace/problems-panel'
+import { Breadcrumbs } from '@/components/workspace/breadcrumbs'
+import { loadSession, saveSession } from '@/lib/session-store'
+import { loadWorkspaceSettings, saveWorkspaceSettings, type WorkspaceSettings } from '@/lib/workspace-settings'
+import { runFormatter, shouldFormat } from '@/lib/format-on-save'
 
 const MonacoEditor = dynamic(() => import('@monaco-editor/react'), {
   ssr: false,
@@ -56,9 +79,32 @@ const MonacoEditor = dynamic(() => import('@monaco-editor/react'), {
 function monacoLanguage(path: string): string {
   const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
   const map: Record<string, string> = {
-    ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
-    json: 'json', css: 'css', scss: 'scss', html: 'html', md: 'markdown',
-    py: 'python', rs: 'rust', go: 'go', sql: 'sql', sh: 'shell', yml: 'yaml', yaml: 'yaml',
+    ts: 'typescript',
+    tsx: 'typescript',
+    js: 'javascript',
+    jsx: 'javascript',
+    mjs: 'javascript',
+    cjs: 'javascript',
+    json: 'json',
+    css: 'css',
+    scss: 'scss',
+    html: 'html',
+    md: 'markdown',
+    py: 'python',
+    rs: 'rust',
+    go: 'go',
+    sql: 'sql',
+    sh: 'shell',
+    yml: 'yaml',
+    yaml: 'yaml',
+    toml: 'ini',
+    xml: 'xml',
+    php: 'php',
+    java: 'java',
+    c: 'c',
+    cpp: 'cpp',
+    cs: 'csharp',
+    rb: 'ruby',
   }
   return map[ext] ?? 'plaintext'
 }
@@ -67,114 +113,61 @@ function baseName(p: string): string {
   return p.split(/[\\/]/).filter(Boolean).pop() ?? p
 }
 
-function joinPath(dir: string, name: string): string {
-  const sep = dir.includes('\\') ? '\\' : '/'
-  return dir.replace(/[\\/]+$/, '') + sep + name
+// Плоский список путей файлов (для Quick Open) из дерева.
+function flattenFiles(nodes: FsNode[], out: string[] = []): string[] {
+  for (const n of nodes) {
+    if (n.is_dir) flattenFiles(n.children, out)
+    else out.push(n.path)
+  }
+  return out
 }
 
-/** Git-статус файла → цвет буквы (M/U/?/D) в проводнике. */
-function gitBadge(path: string, root: string, git: Map<string, string>): { letter: string; cls: string } | null {
-  const rel = path.replace(root, '').replace(/^[\\/]/, '').replace(/\\/g, '/')
-  const st = git.get(rel)
-  if (!st) return null
-  if (st.includes('?')) return { letter: 'U', cls: 'text-green-500' }
-  if (st.includes('M')) return { letter: 'M', cls: 'text-amber-500' }
-  if (st.includes('D')) return { letter: 'D', cls: 'text-red-500' }
-  if (st.includes('A')) return { letter: 'A', cls: 'text-green-500' }
-  return null
-}
-
-type TermLine = { text: string }
-
-function TreeNode({
-  node,
-  depth,
-  root,
-  git,
-  active,
-  onOpen,
-  onToggle,
-  expanded,
-}: {
-  node: FsNode
-  depth: number
-  root: string
-  git: Map<string, string>
-  active: string | null
-  onOpen: (n: FsNode) => void
-  onToggle: (path: string) => void
-  expanded: Set<string>
-}) {
-  const isOpen = expanded.has(node.path)
-  const badge = gitBadge(node.path, root, git)
-  return (
-    <div>
-      <button
-        type="button"
-        onClick={() => (node.is_dir ? onToggle(node.path) : onOpen(node))}
-        className={`flex w-full items-center gap-1 rounded px-1 py-[3px] text-left text-[13px] hover:bg-accent ${
-          active === node.path ? 'bg-accent text-foreground' : 'text-muted-foreground'
-        }`}
-        style={{ paddingLeft: depth * 12 + 4 }}
-      >
-        {node.is_dir ? (
-          <>
-            {isOpen ? <ChevronDown className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />}
-            {isOpen ? <FolderOpen className="size-3.5 shrink-0 text-primary" /> : <FolderClosed className="size-3.5 shrink-0 text-primary" />}
-          </>
-        ) : (
-          <>
-            <span className="w-3.5 shrink-0" />
-            <FileText className="size-3.5 shrink-0" />
-          </>
-        )}
-        <span className="truncate">{node.name}</span>
-        {badge && <span className={`ml-auto shrink-0 font-mono text-[10px] font-semibold ${badge.cls}`}>{badge.letter}</span>}
-      </button>
-      {node.is_dir && isOpen && (
-        <div>
-          {node.children.map((c) => (
-            <TreeNode
-              key={c.path}
-              node={c}
-              depth={depth + 1}
-              root={root}
-              git={git}
-              active={active}
-              onOpen={onOpen}
-              onToggle={onToggle}
-              expanded={expanded}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
+type BottomTab = 'terminal' | 'problems'
+type LeftTab = 'files' | 'search' | 'git'
 
 export function LocalWorkspace({ root, onClose }: { root: string; onClose: () => void }) {
+  // --- Основное состояние ---------------------------------------------------
   const [tree, setTree] = useState<FsNode[]>([])
   const [expanded, setExpanded] = useState<Set<string>>(new Set([root]))
   const [openTabs, setOpenTabs] = useState<string[]>([])
   const [activeFile, setActiveFile] = useState<string | null>(null)
   const [content, setContent] = useState('')
-  const [dirty, setDirty] = useState(false)
-  const [saving, setSaving] = useState(false)
+  const [contents, setContents] = useState<Map<string, string>>(new Map())
+  const [dirty, setDirty] = useState<Set<string>>(new Set())
   const [git, setGit] = useState<Map<string, string>>(new Map())
-  const [termOpen, setTermOpen] = useState(false)
-  const [termLines, setTermLines] = useState<TermLine[]>([])
-  const [termInput, setTermInput] = useState('')
-  const [termRunning, setTermRunning] = useState(false)
-  const [newName, setNewName] = useState('')
-  const [creating, setCreating] = useState<'file' | 'dir' | null>(null)
-  const termListRef = useRef<HTMLDivElement>(null)
+  const [saving, setSaving] = useState(false)
+
+  // Панели
+  const [leftTab, setLeftTab] = useState<LeftTab>('files')
+  const [leftOpen, setLeftOpen] = useState(true)
+  const [bottomOpen, setBottomOpen] = useState(true)
+  const [bottomTab, setBottomTab] = useState<BottomTab>('terminal')
+  const [rightOpen, setRightOpen] = useState(false)
+  const [rightTab, setRightTab] = useState<'ai' | 'preview'>('ai')
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [paletteMode, setPaletteMode] = useState<'files' | 'commands'>('files')
+
+  // Split
+  const [splitFile, setSplitFile] = useState<string | null>(null)
+  const [splitContent, setSplitContent] = useState('')
+
+  // Settings + problems
+  const [settings, setSettings] = useState<WorkspaceSettings>({})
+  const [markers, setMarkers] = useState<ProblemsMarker[]>([])
+  const [showSettings, setShowSettings] = useState(false)
+
+  // Refs — избегаем стейл-клоужеров в кнопках/шорткатах
   const contentRef = useRef(content)
   contentRef.current = content
   const activeRef = useRef(activeFile)
   activeRef.current = activeFile
   const dirtyRef = useRef(dirty)
   dirtyRef.current = dirty
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
+  const monacoInstance = useRef<any>(null)
 
+  // --- Refresh (файлы + git) -----------------------------------------------
   const refresh = useCallback(async () => {
     const [nodes, status] = await Promise.all([
       fsTree(root).catch(() => [] as FsNode[]),
@@ -188,46 +181,102 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
     void refresh()
   }, [refresh])
 
-  const save = useCallback(async () => {
-    const f = activeRef.current
-    if (!f || !dirtyRef.current) return
-    setSaving(true)
-    await fsWrite(f, contentRef.current).catch(() => {})
-    setDirty(false)
-    setSaving(false)
-    void refresh()
-  }, [refresh])
-
-  // Ctrl+S — сохранить, как в VS Code.
+  // Watcher — авто-refresh при внешних изменениях.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-        e.preventDefault()
-        void save()
-      }
+    if (!isDesktop()) return
+    let unlisten: (() => void) | null = null
+    let debounce: ReturnType<typeof setTimeout> | null = null
+    ;(async () => {
+      await fsWatchStart(root).catch(() => {})
+      unlisten = await onFsChanged((ev) => {
+        if (ev.root !== root) return
+        if (debounce) clearTimeout(debounce)
+        debounce = setTimeout(() => void refresh(), 250)
+      })
+    })()
+    return () => {
+      unlisten?.()
+      void fsWatchStop(root).catch(() => {})
+      if (debounce) clearTimeout(debounce)
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [save])
+  }, [root, refresh])
 
-  const openFile = useCallback(async (node: FsNode) => {
-    if (node.is_dir) return
-    setOpenTabs((t) => (t.includes(node.path) ? t : [...t, node.path]))
-    setActiveFile(node.path)
-    const text = await fsRead(node.path).catch(() => '')
+  // Загрузить настройки проекта.
+  useEffect(() => {
+    ;(async () => setSettings(await loadWorkspaceSettings(root)))()
+  }, [root])
+
+  // Восстановить сессию: раскрытые папки + табы + активный файл.
+  const restoredRef = useRef(false)
+  useEffect(() => {
+    if (restoredRef.current) return
+    const s = loadSession()
+    if (s && s.root === root) {
+      restoredRef.current = true
+      setExpanded(new Set([root, ...s.expandedDirs]))
+      setOpenTabs(s.openTabs)
+      if (s.activeFile) void openFileByPath(s.activeFile)
+    } else {
+      restoredRef.current = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [root])
+
+  // Автосохранение сессии при значимых изменениях.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      saveSession({
+        root,
+        openTabs,
+        activeFile,
+        expandedDirs: Array.from(expanded).filter((p) => p !== root),
+        updatedAt: Date.now(),
+      })
+    }, 400)
+    return () => clearTimeout(t)
+  }, [root, openTabs, activeFile, expanded])
+
+  // --- Открытие файлов ------------------------------------------------------
+  const openFileByPath = useCallback(async (path: string, line?: number, column?: number) => {
+    const cached = contents.get(path)
+    const text = cached ?? (await fsRead(path).catch(() => ''))
+    setContents((prev) => (prev.has(path) ? prev : new Map(prev).set(path, text)))
+    setOpenTabs((t) => (t.includes(path) ? t : [...t, path]))
+    setActiveFile(path)
     setContent(text)
-    setDirty(false)
-  }, [])
+    // Прыжок к строке, когда Monaco смонтируется, — через микротаск.
+    if (line != null) {
+      requestAnimationFrame(() => {
+        try {
+          const m = monacoInstance.current
+          const editor = m?.editor?.getEditors?.()?.[0]
+          editor?.revealLineInCenter?.(line)
+          editor?.setPosition?.({ lineNumber: line, column: column ?? 1 })
+          editor?.focus?.()
+        } catch {
+          /* mount race */
+        }
+      })
+    }
+  }, [contents])
+
+  const openNode = useCallback(
+    (n: FsNode) => {
+      if (n.is_dir) return
+      void openFileByPath(n.path)
+    },
+    [openFileByPath],
+  )
 
   const switchTab = useCallback(
     async (path: string) => {
-      if (dirtyRef.current && activeRef.current) await save()
+      const cached = contents.get(path)
+      const text = cached ?? (await fsRead(path).catch(() => ''))
+      setContents((prev) => (prev.has(path) ? prev : new Map(prev).set(path, text)))
       setActiveFile(path)
-      const text = await fsRead(path).catch(() => '')
       setContent(text)
-      setDirty(false)
     },
-    [save],
+    [contents],
   )
 
   const closeTab = useCallback(
@@ -240,79 +289,190 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
           else {
             setActiveFile(null)
             setContent('')
-            setDirty(false)
           }
         }
         return next
+      })
+      setDirty((s) => {
+        const n = new Set(s)
+        n.delete(path)
+        return n
+      })
+      setContents((prev) => {
+        const n = new Map(prev)
+        n.delete(path)
+        return n
       })
     },
     [switchTab],
   )
 
-  const toggleDir = (path: string) =>
-    setExpanded((s) => {
-      const next = new Set(s)
-      if (next.has(path)) next.delete(path)
-      else next.add(path)
-      return next
-    })
-
-  const createEntry = async () => {
-    const name = newName.trim()
-    if (!name || !creating) return
-    const path = joinPath(root, name)
-    if (creating === 'file') await fsCreateFile(path).catch(() => {})
-    else await fsCreateDir(path).catch(() => {})
-    setNewName('')
-    setCreating(null)
-    void refresh()
-  }
-
-  const deleteActive = async () => {
-    const f = activeFile
-    if (!f) return
-    await fsDelete(f).catch(() => {})
-    closeTab(f)
-    void refresh()
-  }
-
-  // --- Терминал ---------------------------------------------------------------
-  const termSeq = useRef(0)
-  const runCommand = useCallback(
-    async (line: string) => {
-      if (!line.trim() || termRunning) return
-      setTermOpen(true)
-      setTermLines((l) => [...l, { text: `❯ ${line}` }])
-      setTermRunning(true)
-      const id = `local-${++termSeq.current}`
-      const unlisten = await onTermOutput(id, (chunk) => {
-        if (chunk.done) {
-          setTermLines((l) => [...l, { text: `[завершено, код ${chunk.code ?? 0}]` }])
-          return
+  // --- Сохранение + formatter-on-save --------------------------------------
+  const save = useCallback(async () => {
+    const f = activeRef.current
+    if (!f || !dirtyRef.current.has(f)) return
+    setSaving(true)
+    try {
+      await fsWrite(f, contentRef.current)
+      // format-on-save
+      const s = settingsRef.current
+      if (shouldFormat(s, f) && s.format?.command) {
+        try {
+          await runFormatter(root, s.format.command, f)
+          const fresh = await fsRead(f).catch(() => contentRef.current)
+          setContent(fresh)
+          setContents((prev) => new Map(prev).set(f, fresh))
+        } catch {
+          /* тихо — форматтер не критичен для UX */
         }
-        if (chunk.data) setTermLines((l) => [...l, { text: chunk.data }])
-      })
-      try {
-        await termRun(id, root, line)
-      } catch (err) {
-        setTermLines((l) => [
-          ...l,
-          { text: `Ошибка: ${err instanceof Error ? err.message : String(err)}` },
-        ])
-      } finally {
-        unlisten()
-        setTermRunning(false)
-        void refresh()
       }
-    },
-    [root, termRunning, refresh],
+      setDirty((s) => {
+        const n = new Set(s)
+        n.delete(f)
+        return n
+      })
+    } finally {
+      setSaving(false)
+    }
+  }, [root])
+
+  // --- Toggle раскрытия -----------------------------------------------------
+  const toggleDir = useCallback((path: string) => {
+    setExpanded((s) => {
+      const n = new Set(s)
+      if (n.has(path)) n.delete(path)
+      else n.add(path)
+      return n
+    })
+  }, [])
+
+  // --- Список файлов для Quick Open ----------------------------------------
+  const allFiles = useMemo(() => flattenFiles(tree), [tree])
+
+  // --- Palette commands ----------------------------------------------------
+  const commands: PaletteCommand[] = useMemo(
+    () => [
+      {
+        id: 'toggle-left',
+        title: 'Вид: переключить сайдбар',
+        hint: 'Ctrl+B',
+        run: () => setLeftOpen((v) => !v),
+      },
+      {
+        id: 'toggle-bottom',
+        title: 'Вид: переключить нижнюю панель',
+        hint: 'Ctrl+J',
+        run: () => setBottomOpen((v) => !v),
+      },
+      {
+        id: 'toggle-right',
+        title: 'Вид: переключить AI-панель',
+        hint: 'Ctrl+Alt+A',
+        run: () => {
+          setRightOpen((v) => !v)
+          setRightTab('ai')
+        },
+      },
+      {
+        id: 'toggle-preview',
+        title: 'Вид: переключить Live Preview',
+        run: () => {
+          setRightOpen(true)
+          setRightTab('preview')
+        },
+      },
+      { id: 'terminal', title: 'Терминал: показать/скрыть', hint: 'Ctrl+`', run: () => setBottomOpen((v) => !v) },
+      { id: 'search', title: 'Поиск: по всему проекту', hint: 'Ctrl+Shift+F', run: () => { setLeftOpen(true); setLeftTab('search') } },
+      { id: 'git', title: 'Git: панель изменений', run: () => { setLeftOpen(true); setLeftTab('git') } },
+      { id: 'refresh', title: 'Файлы: обновить дерево', run: () => void refresh() },
+      { id: 'settings', title: 'Настройки проекта…', run: () => setShowSettings(true) },
+      {
+        id: 'split',
+        title: 'Редактор: разделить',
+        run: () => activeFile && setSplitFile(activeFile),
+      },
+      {
+        id: 'save',
+        title: 'Файл: сохранить',
+        hint: 'Ctrl+S',
+        run: () => void save(),
+      },
+      {
+        id: 'close-folder',
+        title: 'Файл: закрыть папку',
+        run: onClose,
+      },
+      ...(settings.tasks ?? []).map((t, i) => ({
+        id: `task-${i}`,
+        title: `Задача: ${t.label}`,
+        run: () => {
+          setBottomOpen(true)
+          setBottomTab('terminal')
+          // TODO: команда прокинется в PTY стандартным путём — пока пусть
+          // пользователь скопирует её и выполнит в открытом терминале.
+          void navigator.clipboard?.writeText(t.command).catch(() => {})
+        },
+      })),
+    ],
+    [refresh, save, onClose, activeFile, settings.tasks],
   )
 
+  // --- Глобальные шорткаты --------------------------------------------------
   useEffect(() => {
-    const el = termListRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [termLines.length])
+    const handler = (e: KeyboardEvent) => {
+      const meta = e.ctrlKey || e.metaKey
+      if (meta && e.key.toLowerCase() === 's') {
+        e.preventDefault()
+        void save()
+      } else if (meta && e.shiftKey && e.key.toLowerCase() === 'p') {
+        e.preventDefault()
+        setPaletteMode('commands')
+        setPaletteOpen(true)
+      } else if (meta && !e.shiftKey && e.key.toLowerCase() === 'p') {
+        e.preventDefault()
+        setPaletteMode('files')
+        setPaletteOpen(true)
+      } else if (meta && e.shiftKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault()
+        setLeftOpen(true)
+        setLeftTab('search')
+      } else if (meta && e.key.toLowerCase() === 'b') {
+        e.preventDefault()
+        setLeftOpen((v) => !v)
+      } else if (meta && e.key.toLowerCase() === 'j') {
+        e.preventDefault()
+        setBottomOpen((v) => !v)
+      } else if (meta && e.altKey && e.key.toLowerCase() === 'a') {
+        e.preventDefault()
+        setRightOpen((v) => !v)
+        setRightTab('ai')
+      } else if (meta && e.key === '`') {
+        e.preventDefault()
+        setBottomOpen((v) => !v)
+        setBottomTab('terminal')
+      } else if (meta && e.key.toLowerCase() === 'w') {
+        if (activeRef.current) {
+          e.preventDefault()
+          closeTab(activeRef.current)
+        }
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [save, closeTab])
 
+  // --- Split-контент --------------------------------------------------------
+  useEffect(() => {
+    if (!splitFile) {
+      setSplitContent('')
+      return
+    }
+    fsRead(splitFile)
+      .then(setSplitContent)
+      .catch(() => setSplitContent(''))
+  }, [splitFile])
+
+  // --- Render ---------------------------------------------------------------
   const folderLabel = useMemo(() => baseName(root), [root])
 
   return (
@@ -323,17 +483,77 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
         <span className="truncate text-sm font-medium">{folderLabel}</span>
         <span className="truncate text-xs text-muted-foreground">{root}</span>
         <div className="ml-auto flex items-center gap-1">
-          <Button variant="ghost" size="icon" className="size-7" title="Обновить" onClick={() => void refresh()}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            title="Command Palette (Ctrl+Shift+P)"
+            onClick={() => {
+              setPaletteMode('commands')
+              setPaletteOpen(true)
+            }}
+          >
+            <CommandIcon className="size-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            title="Обновить"
+            onClick={() => void refresh()}
+          >
             <RefreshCw className="size-3.5" />
           </Button>
           <Button
             variant="ghost"
             size="icon"
             className="size-7"
-            title="Терминал"
-            onClick={() => setTermOpen((o) => !o)}
+            title="Сайдбар (Ctrl+B)"
+            onClick={() => setLeftOpen((v) => !v)}
           >
-            <SquareTerminal className="size-3.5" />
+            <PanelLeft className={`size-3.5 ${leftOpen ? 'text-primary' : ''}`} />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            title="Нижняя панель (Ctrl+J)"
+            onClick={() => setBottomOpen((v) => !v)}
+          >
+            <PanelBottom className={`size-3.5 ${bottomOpen ? 'text-primary' : ''}`} />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            title="AI-панель (Ctrl+Alt+A)"
+            onClick={() => {
+              setRightOpen((v) => !v || rightTab !== 'ai')
+              setRightTab('ai')
+            }}
+          >
+            <Bot className={`size-3.5 ${rightOpen && rightTab === 'ai' ? 'text-primary' : ''}`} />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            title="Live Preview"
+            onClick={() => {
+              setRightOpen(true)
+              setRightTab('preview')
+            }}
+          >
+            <MonitorSmartphone className={`size-3.5 ${rightOpen && rightTab === 'preview' ? 'text-primary' : ''}`} />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            title="Настройки проекта"
+            onClick={() => setShowSettings(true)}
+          >
+            <Settings className="size-3.5" />
           </Button>
           <Button variant="ghost" size="icon" className="size-7" title="Закрыть папку" onClick={onClose}>
             <X className="size-4" />
@@ -342,184 +562,434 @@ export function LocalWorkspace({ root, onClose }: { root: string; onClose: () =>
       </header>
 
       <div className="flex min-h-0 flex-1">
-        {/* Проводник */}
-        <aside className="flex w-60 shrink-0 flex-col border-r border-border">
-          <div className="flex items-center gap-1 px-2 py-1.5">
-            <span className="px-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              Проводник
-            </span>
-            <div className="ml-auto flex items-center gap-0.5">
-              <button
-                type="button"
-                title="Новый файл"
-                className="rounded p-1 hover:bg-accent"
-                onClick={() => setCreating('file')}
-              >
-                <FilePlus2 className="size-3.5" />
-              </button>
-              <button
-                type="button"
-                title="Новая папка"
-                className="rounded p-1 hover:bg-accent"
-                onClick={() => setCreating('dir')}
-              >
-                <FolderPlus className="size-3.5" />
-              </button>
-              <span title="Git-репозиторий" className="rounded p-1 text-muted-foreground">
-                <GitBranch className="size-3.5" />
-              </span>
-            </div>
-          </div>
-          {creating && (
-            <div className="flex items-center gap-1 px-2 pb-1.5">
-              <input
-                autoFocus
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') void createEntry()
-                  if (e.key === 'Escape') {
-                    setCreating(null)
-                    setNewName('')
-                  }
-                }}
-                placeholder={creating === 'file' ? 'имя файла…' : 'имя папки…'}
-                className="h-7 w-full rounded border border-border bg-background px-2 text-xs outline-none focus:border-primary"
+        {/* Левый сайдбар */}
+        {leftOpen && (
+          <aside className="flex w-72 shrink-0 flex-col border-r border-border">
+            <div className="flex items-center gap-0.5 border-b border-border px-1 py-1 text-xs">
+              <SidebarTab
+                icon={<FolderOpen className="size-3.5" />}
+                label="Файлы"
+                active={leftTab === 'files'}
+                onClick={() => setLeftTab('files')}
+              />
+              <SidebarTab
+                icon={<Search className="size-3.5" />}
+                label="Поиск"
+                active={leftTab === 'search'}
+                onClick={() => setLeftTab('search')}
+              />
+              <SidebarTab
+                icon={<GitBranch className="size-3.5" />}
+                label="Git"
+                active={leftTab === 'git'}
+                onClick={() => setLeftTab('git')}
               />
             </div>
-          )}
-          <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
-            {tree.map((n) => (
-              <TreeNode
-                key={n.path}
-                node={n}
-                depth={0}
-                root={root}
-                git={git}
-                active={activeFile}
-                onOpen={openFile}
-                onToggle={toggleDir}
-                expanded={expanded}
-              />
-            ))}
-            {tree.length === 0 && (
-              <p className="px-2 py-3 text-xs text-muted-foreground">Папка пуста</p>
-            )}
-          </div>
-        </aside>
+            <div className="min-h-0 flex-1 overflow-hidden">
+              {leftTab === 'files' && (
+                <div className="h-full overflow-y-auto px-1 py-1">
+                  <FileTree
+                    tree={tree}
+                    root={root}
+                    git={git}
+                    expanded={expanded}
+                    active={activeFile}
+                    onToggle={toggleDir}
+                    onOpen={openNode}
+                    onChanged={refresh}
+                  />
+                  {tree.length === 0 && (
+                    <p className="px-2 py-3 text-xs text-muted-foreground">Папка пуста</p>
+                  )}
+                </div>
+              )}
+              {leftTab === 'search' && (
+                <GlobalSearchPanel
+                  root={root}
+                  onOpenFile={(p, l, c) => void openFileByPath(p, l, c)}
+                />
+              )}
+              {leftTab === 'git' && (
+                <GitPanel root={root} onOpenFile={(p) => void openFileByPath(p)} />
+              )}
+            </div>
+          </aside>
+        )}
 
-        {/* Редактор + терминал */}
+        {/* Центральная область */}
         <section className="flex min-w-0 flex-1 flex-col">
           {/* Вкладки */}
           {openTabs.length > 0 && (
             <div className="flex h-9 shrink-0 items-stretch overflow-x-auto border-b border-border">
-              {openTabs.map((p) => (
-                <div
-                  key={p}
-                  className={`group flex items-center gap-1 border-r border-border px-3 text-xs ${
-                    activeFile === p ? 'bg-background text-foreground' : 'bg-muted/40 text-muted-foreground hover:bg-muted'
-                  }`}
-                >
-                  <button type="button" className="flex items-center gap-1.5" onClick={() => void switchTab(p)}>
-                    <FileText className="size-3" />
-                    {baseName(p)}
-                    {activeFile === p && dirty && <span className="size-1.5 rounded-full bg-primary" title="Есть несохранённые изменения" />}
-                  </button>
+              {openTabs.map((p) => {
+                const spec = iconForFile(baseName(p))
+                const isDirty = dirty.has(p)
+                return (
+                  <div
+                    key={p}
+                    className={`group flex items-center gap-1 border-r border-border px-3 text-xs ${
+                      activeFile === p
+                        ? 'bg-background text-foreground'
+                        : 'bg-muted/40 text-muted-foreground hover:bg-muted'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      className="flex items-center gap-1.5"
+                      onClick={() => void switchTab(p)}
+                    >
+                      <spec.Icon className={`size-3 ${spec.className}`} />
+                      {baseName(p)}
+                      {isDirty && <span className="size-1.5 rounded-full bg-primary" title="Не сохранено" />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setSplitFile(p)
+                      }}
+                      className="rounded p-0.5 opacity-0 hover:bg-accent group-hover:opacity-100"
+                      title="Открыть рядом"
+                    >
+                      <SplitIcon className="size-3" />
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded p-0.5 opacity-0 hover:bg-accent group-hover:opacity-100"
+                      onClick={() => closeTab(p)}
+                      title="Закрыть"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {/* Breadcrumbs */}
+          {activeFile && <Breadcrumbs root={root} file={activeFile} />}
+
+          {/* Редактор + split */}
+          <div className="flex min-h-0 flex-1">
+            <div className="min-h-0 min-w-0 flex-1">
+              {activeFile ? (
+                <MonacoEditor
+                  path={activeFile}
+                  language={monacoLanguage(activeFile)}
+                  value={content}
+                  onMount={(_editor, monaco) => {
+                    monacoInstance.current = monaco
+                    subscribeMonacoMarkers(monaco, setMarkers)
+                  }}
+                  onChange={(v) => {
+                    setContent(v ?? '')
+                    setContents((prev) => new Map(prev).set(activeFile, v ?? ''))
+                    setDirty((s) => new Set(s).add(activeFile))
+                  }}
+                  theme="vs-dark"
+                  options={{
+                    minimap: { enabled: false },
+                    fontSize: settings.editor?.fontSize ?? 13,
+                    tabSize: settings.editor?.tabSize ?? 2,
+                    insertSpaces: settings.editor?.insertSpaces ?? true,
+                    wordWrap: settings.editor?.wordWrap ?? 'off',
+                    automaticLayout: true,
+                    scrollBeyondLastLine: false,
+                  }}
+                />
+              ) : (
+                <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
+                  <FolderOpen className="size-8 opacity-40" />
+                  <p className="text-sm">Выбери файл в проводнике слева</p>
+                  <p className="text-xs">
+                    Ctrl+P — быстрый поиск файла · Ctrl+Shift+P — команды · Ctrl+` — терминал
+                  </p>
+                </div>
+              )}
+            </div>
+            {splitFile && (
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col border-l border-border">
+                <div className="flex h-6 shrink-0 items-center gap-2 border-b border-border/50 bg-muted/30 px-2 text-[11px]">
+                  <span className="truncate">{baseName(splitFile)}</span>
                   <button
                     type="button"
-                    className="rounded p-0.5 opacity-0 hover:bg-accent group-hover:opacity-100"
-                    onClick={() => closeTab(p)}
-                    title="Закрыть"
+                    className="ml-auto rounded p-0.5 hover:bg-accent"
+                    onClick={() => setSplitFile(null)}
                   >
                     <X className="size-3" />
                   </button>
                 </div>
-              ))}
-            </div>
-          )}
-
-          {/* Monaco */}
-          <div className="min-h-0 flex-1">
-            {activeFile ? (
-              <MonacoEditor
-                path={activeFile}
-                language={monacoLanguage(activeFile)}
-                value={content}
-                onChange={(v) => {
-                  setContent(v ?? '')
-                  setDirty(true)
-                }}
-                theme="vs-dark"
-                options={{
-                  minimap: { enabled: false },
-                  fontSize: 13,
-                  automaticLayout: true,
-                  scrollBeyondLastLine: false,
-                  tabSize: 2,
-                }}
-              />
-            ) : (
-              <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
-                <FolderOpen className="size-8 opacity-40" />
-                <p className="text-sm">Выбери файл в проводнике слева</p>
-                <p className="text-xs">Ctrl+S — сохранить · файлы на диске, не в облаке</p>
+                <div className="min-h-0 flex-1">
+                  <MonacoEditor
+                    path={splitFile}
+                    language={monacoLanguage(splitFile)}
+                    value={splitContent}
+                    onChange={(v) => setSplitContent(v ?? '')}
+                    theme="vs-dark"
+                    options={{
+                      minimap: { enabled: false },
+                      fontSize: settings.editor?.fontSize ?? 13,
+                      automaticLayout: true,
+                    }}
+                  />
+                </div>
               </div>
             )}
           </div>
 
-          {/* Терминал */}
-          {termOpen && (
-            <div className="flex h-52 shrink-0 flex-col border-t border-border bg-zinc-950">
-              <div className="flex h-8 shrink-0 items-center gap-2 border-b border-zinc-800 px-3 text-xs text-zinc-400">
-                <SquareTerminal className="size-3.5" />
-                Терминал · {folderLabel}
-                {termRunning && <Loader2 className="size-3 animate-spin" />}
-                <div className="ml-auto flex items-center gap-1">
-                  {activeFile && dirty && (
-                    <button
-                      type="button"
-                      onClick={() => void save()}
-                      disabled={saving}
-                      className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-zinc-300 hover:bg-zinc-800"
-                      title="Сохранить активный файл"
-                    >
-                      <Save className="size-3" /> {saving ? 'Сохранение…' : 'Сохранить'}
-                    </button>
+          {/* Нижняя панель */}
+          {bottomOpen && (
+            <div className="flex h-64 shrink-0 flex-col border-t border-border">
+              <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border bg-muted/30 px-2 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setBottomTab('terminal')}
+                  className={`flex items-center gap-1 rounded px-2 py-1 ${
+                    bottomTab === 'terminal' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/60'
+                  }`}
+                >
+                  <SquareTerminal className="size-3" /> Терминал
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBottomTab('problems')}
+                  className={`flex items-center gap-1 rounded px-2 py-1 ${
+                    bottomTab === 'problems' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/60'
+                  }`}
+                >
+                  Проблемы
+                  {markers.length > 0 && (
+                    <span className="rounded bg-red-500/20 px-1.5 text-[10px] text-red-400">
+                      {markers.length}
+                    </span>
                   )}
+                </button>
+                <div className="ml-auto flex items-center gap-1">
+                  {saving && <Loader2 className="size-3 animate-spin text-muted-foreground" />}
                   <button
                     type="button"
-                    onClick={() => void deleteActive()}
-                    className="rounded px-1.5 py-0.5 text-[11px] text-zinc-500 hover:bg-zinc-800 hover:text-red-400"
-                    title="Удалить активный файл"
+                    className="rounded p-1 hover:bg-accent"
+                    onClick={() => setBottomOpen(false)}
                   >
-                    Удалить файл
+                    <X className="size-3" />
                   </button>
                 </div>
               </div>
-              <div ref={termListRef} className="min-h-0 flex-1 overflow-y-auto px-3 py-1 font-mono text-[12px] leading-5 text-zinc-200">
-                {termLines.map((l, i) => (
-                  <pre key={i} className="whitespace-pre-wrap break-all">{l.text}</pre>
-                ))}
-              </div>
-              <div className="flex h-9 shrink-0 items-center gap-2 border-t border-zinc-800 px-3">
-                <span className="text-xs text-zinc-500">❯</span>
-                <input
-                  value={termInput}
-                  onChange={(e) => setTermInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      const line = termInput
-                      setTermInput('')
-                      void runCommand(line)
-                    }
-                  }}
-                  placeholder="команда… (Enter — выполнить)"
-                  className="h-7 w-full bg-transparent font-mono text-[12px] text-zinc-100 outline-none placeholder:text-zinc-600"
-                />
+              <div className="min-h-0 flex-1">
+                {bottomTab === 'terminal' && <PtyTerminal id={`pty:${root}`} cwd={root} />}
+                {bottomTab === 'problems' && (
+                  <ProblemsPanel
+                    markers={markers}
+                    onOpen={(f, l, c) => void openFileByPath(f, l, c)}
+                  />
+                )}
               </div>
             </div>
           )}
         </section>
+
+        {/* Правая панель — AI / Preview */}
+        {rightOpen && (
+          <aside className="flex w-[420px] shrink-0 flex-col border-l border-border">
+            <div className="flex items-center gap-1 border-b border-border px-2 py-1 text-xs">
+              <SidebarTab
+                icon={<Bot className="size-3.5" />}
+                label="AI"
+                active={rightTab === 'ai'}
+                onClick={() => setRightTab('ai')}
+              />
+              <SidebarTab
+                icon={<Play className="size-3.5" />}
+                label="Preview"
+                active={rightTab === 'preview'}
+                onClick={() => setRightTab('preview')}
+              />
+              <button
+                type="button"
+                onClick={() => setRightOpen(false)}
+                className="ml-auto rounded p-1 hover:bg-accent"
+              >
+                <X className="size-3" />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1">
+              {rightTab === 'ai' && (
+                <AiSidePanel activeFile={activeFile} onClose={() => setRightOpen(false)} />
+              )}
+              {rightTab === 'preview' && <PreviewPanel root={root} />}
+            </div>
+          </aside>
+        )}
+      </div>
+
+      {showSettings && (
+        <SettingsDialog
+          root={root}
+          initial={settings}
+          onClose={() => setShowSettings(false)}
+          onSave={async (s) => {
+            await saveWorkspaceSettings(root, s).catch(() => {})
+            setSettings(s)
+            setShowSettings(false)
+          }}
+        />
+      )}
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        commands={commands}
+        files={allFiles}
+        onOpenFile={(p) => void openFileByPath(p)}
+        initialMode={paletteMode}
+      />
+    </div>
+  )
+}
+
+function SidebarTab({
+  icon,
+  label,
+  active,
+  onClick,
+}: {
+  icon: React.ReactNode
+  label: string
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex items-center gap-1 rounded px-2 py-1 ${
+        active ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/60'
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
+  )
+}
+
+function SettingsDialog({
+  root: _root,
+  initial,
+  onClose,
+  onSave,
+}: {
+  root: string
+  initial: WorkspaceSettings
+  onClose: () => void
+  onSave: (s: WorkspaceSettings) => Promise<void>
+}) {
+  const [s, setS] = useState<WorkspaceSettings>(initial)
+  return (
+    <div
+      className="fixed inset-0 z-[900] flex items-center justify-center bg-black/40 p-4"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
+    >
+      <div className="w-full max-w-lg rounded-lg border border-border bg-popover p-4 text-sm">
+        <div className="mb-3 flex items-center gap-2">
+          <Settings className="size-4" />
+          <h2 className="font-medium">Настройки проекта</h2>
+          <button type="button" onClick={onClose} className="ml-auto rounded p-1 hover:bg-accent">
+            <X className="size-4" />
+          </button>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">Размер табуляции</label>
+            <input
+              type="number"
+              value={s.editor?.tabSize ?? 2}
+              onChange={(e) =>
+                setS((v) => ({ ...v, editor: { ...v.editor, tabSize: Number(e.target.value) } }))
+              }
+              className="h-8 w-24 rounded border border-border bg-background px-2 outline-none"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">Размер шрифта</label>
+            <input
+              type="number"
+              value={s.editor?.fontSize ?? 13}
+              onChange={(e) =>
+                setS((v) => ({ ...v, editor: { ...v.editor, fontSize: Number(e.target.value) } }))
+              }
+              className="h-8 w-24 rounded border border-border bg-background px-2 outline-none"
+            />
+          </div>
+          <div>
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={s.editor?.wordWrap === 'on'}
+                onChange={(e) =>
+                  setS((v) => ({
+                    ...v,
+                    editor: { ...v.editor, wordWrap: e.target.checked ? 'on' : 'off' },
+                  }))
+                }
+              />
+              Перенос строк (word wrap)
+            </label>
+          </div>
+          <div className="rounded border border-border p-3">
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={s.format?.onSave ?? false}
+                onChange={(e) =>
+                  setS((v) => ({ ...v, format: { ...v.format, onSave: e.target.checked } }))
+                }
+              />
+              Форматировать при сохранении (Ctrl+S)
+            </label>
+            <input
+              value={s.format?.command ?? ''}
+              onChange={(e) => setS((v) => ({ ...v, format: { ...v.format, command: e.target.value } }))}
+              placeholder="prettier --write {file}"
+              className="mt-2 h-8 w-full rounded border border-border bg-background px-2 text-xs outline-none"
+            />
+            <input
+              value={(s.format?.extensions ?? []).join(',')}
+              onChange={(e) =>
+                setS((v) => ({
+                  ...v,
+                  format: {
+                    ...v.format,
+                    extensions: e.target.value
+                      .split(',')
+                      .map((x) => x.trim())
+                      .filter(Boolean),
+                  },
+                }))
+              }
+              placeholder="ts,tsx,js,jsx (пусто = все)"
+              className="mt-2 h-8 w-full rounded border border-border bg-background px-2 text-xs outline-none"
+            />
+          </div>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded border border-border px-3 py-1 text-xs hover:bg-accent"
+          >
+            Отмена
+          </button>
+          <button
+            type="button"
+            onClick={() => void onSave(s)}
+            className="rounded bg-primary px-3 py-1 text-xs text-primary-foreground hover:bg-primary/90"
+          >
+            Сохранить в .aura/settings.json
+          </button>
+        </div>
       </div>
     </div>
   )

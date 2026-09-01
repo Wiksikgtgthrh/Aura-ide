@@ -24,6 +24,11 @@ use tauri::{AppHandle, Emitter, RunEvent, State};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command as TokioCommand;
 
+mod git;
+mod pty;
+mod search;
+mod watcher;
+
 // Windows-specific extension for CREATE_NO_WINDOW / creation_flags().
 // Both std::process::Command and tokio::process::Command use this trait on Windows.
 #[cfg(windows)]
@@ -34,7 +39,7 @@ use std::os::windows::process::CommandExt;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, thiserror::Error)]
-enum AuraError {
+pub enum AuraError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("http: {0}")]
@@ -729,6 +734,8 @@ pub fn run() {
             shells: Mutex::new(HashMap::new()),
             previews: Mutex::new(HashMap::new()),
         })
+        .manage(watcher::WatcherState::default())
+        .manage(pty::PtyState::default())
         .invoke_handler(tauri::generate_handler![
             term_run,
             term_kill,
@@ -744,6 +751,33 @@ pub fn run() {
             preview_stop,
             api_key_probe,
             local_ipv4,
+            // Поиск / замена по всему проекту
+            search::fs_search,
+            search::fs_replace_at,
+            // File-system watcher
+            watcher::fs_watch_start,
+            watcher::fs_watch_stop,
+            // Расширенный Git
+            git::git_branch,
+            git::git_branch_list,
+            git::git_checkout,
+            git::git_create_branch,
+            git::git_stage,
+            git::git_unstage,
+            git::git_stage_all,
+            git::git_discard,
+            git::git_commit,
+            git::git_push,
+            git::git_pull,
+            git::git_fetch,
+            git::git_diff,
+            git::git_log,
+            git::git_init,
+            // Интерактивный терминал (PTY)
+            pty::pty_open,
+            pty::pty_write,
+            pty::pty_resize,
+            pty::pty_close,
         ])
         .build(tauri::generate_context!())
         .expect("ошибка запуска Aura IDE");
